@@ -21,7 +21,15 @@
 #                   Markdown, so this is a no-op
 #   --dry-run       print the request bodies instead of sending
 #
-# Env: RELAY_DB overrides the settings DB path.
+# Delivery path: sends are routed through the relay's POST /api/notify when
+# the relay is up — that logs the message to the dashboard feed and queues it
+# as context for the agent's next turn in the target conversation. When the
+# relay is down, falls back to the direct Discord API and (for owner-DM
+# sends) best-effort records the same bookkeeping straight into the DB.
+#
+# Env: RELAY_DB overrides the settings DB path; RELAY_URL overrides the relay
+# base URL (default: tries http://127.0.0.1:$PORT, then :8100, then :8101);
+# NOTIFY_TOKEN is forwarded as X-Notify-Token if the relay requires one.
 
 set -uo pipefail
 
@@ -30,12 +38,13 @@ DB="${RELAY_DB:-$REPO_DIR/data/app.db}"
 API="https://discord.com/api/v10"
 
 CHANNEL_ID=""
+EXPLICIT_CHANNEL=0
 DRY_RUN=0
 MSG_ARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --channel) CHANNEL_ID="${2:?--channel needs a value}"; shift 2 ;;
+    --channel) CHANNEL_ID="${2:?--channel needs a value}"; EXPLICIT_CHANNEL=1; shift 2 ;;
     --md)      shift ;; # no-op: Discord is Markdown-native
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -52,6 +61,29 @@ fi
 # runs don't error. (Glob match, not ${MSG//…/} substitution: the latter is
 # quadratic in bash and hangs for minutes on large piped input.)
 if [[ "$MSG" != *[![:space:]]* ]]; then
+  exit 0
+fi
+
+# Try the relay's /api/notify first; 0 = accepted (message delivered + logged
+# + queued as agent context — nothing left to do).
+relay_send() {
+  [ "$DRY_RUN" = 0 ] || return 1
+  local body base code
+  body="$(jq -n --arg t "$MSG" --arg c "$CHANNEL_ID" \
+    '{text: $t, format: "md", source: "notify"}
+     + (if $c != "" then {channel_id: $c} else {} end)')"
+  for base in ${RELAY_URL:-} ${PORT:+http://127.0.0.1:$PORT} \
+              http://127.0.0.1:8100 http://127.0.0.1:8101; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST "$base/api/notify" \
+      -H 'Content-Type: application/json' \
+      ${NOTIFY_TOKEN:+-H "X-Notify-Token: $NOTIFY_TOKEN"} \
+      -d "$body" 2>/dev/null)"
+    [ "$code" = "200" ] && return 0
+  done
+  return 1
+}
+
+if relay_send; then
   exit 0
 fi
 
@@ -84,8 +116,37 @@ if [ -z "$CHANNEL_ID" ]; then
                  ON CONFLICT(key) DO UPDATE SET value=excluded.value" 2>/dev/null || true
 fi
 
-# Discord caps message content at 2000 chars; chunk conservatively.
+# Direct-path bookkeeping: the relay wasn't involved, so record the message in
+# its DB ourselves — a dashboard-feed row plus context for the agent's next
+# turn in the owner's DM conversation. Only for default (owner-DM) sends —
+# for --channel targets we can't tell channel vs thread without the API.
+# Best-effort: never fails the send.
+record_direct() {
+  [ "$EXPLICIT_CHANNEL" = 0 ] || return 0
+  [ "$DRY_RUN" = 0 ] || return 0
+  local now esc
+  now="$(($(date +%s) * 1000))"
+  esc="${ORIG_MSG//\'/\'\'}"
+  sqlite3 "$DB" "
+    CREATE TABLE IF NOT EXISTS pending_context (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      kind TEXT,
+      text TEXT NOT NULL,
+      session_key TEXT NOT NULL
+    );
+    INSERT INTO message_log (created_at, direction, text, session_id, ok, error)
+      VALUES ($now, 'out', '[notify] ' || '$esc', NULL, 1, NULL);
+    INSERT INTO pending_context (created_at, source, text, session_key)
+      VALUES ($now, 'notify', substr('$esc', 1, 1500), 'claude_session_id:dm:' || '$CHANNEL_ID');
+  " 2>/dev/null || true
+}
+
+# Discord caps message content at 2000 chars; chunk conservatively. The loop
+# consumes $MSG chunk by chunk; keep the original for bookkeeping.
 MAX_CHUNK=1900
+ORIG_MSG="$MSG"
 
 while [ -n "$MSG" ]; do
   CHUNK="${MSG:0:$MAX_CHUNK}"
@@ -102,3 +163,5 @@ while [ -n "$MSG" ]; do
     exit 1
   fi
 done
+
+record_direct

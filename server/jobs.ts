@@ -13,8 +13,20 @@
  */
 import { dirname, join, resolve } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
-import { listJobs, getJob, recordJobRun, type Job } from './db.ts';
-import { ownerDmChannelId, sendDiscord } from './discord.ts';
+import {
+  listJobs,
+  getJob,
+  recordJobRun,
+  logMessage,
+  addPendingContext,
+  type Job,
+} from './db.ts';
+import {
+  dmSessionKey,
+  ownerDmChannelId,
+  sendDiscord,
+  sessionKeyForChannel,
+} from './discord.ts';
 
 export const JOBS_DIR = resolve('./data/jobs');
 
@@ -74,12 +86,26 @@ async function recordRunOutcome(job: Job, exitCode: number, output: string): Pro
     // watcher is the owner's problem, not the alert channel's.
     const dm = await ownerDmChannelId();
     if (!dm) return;
-    await sendDiscord(
-      dm,
+    const warning =
       `⚠️ Scheduled job **${job.name}** has failed ${FAILURE_NOTIFY_AT} times in a row ` +
-        `(exit ${exitCode}). Last error:\n\`\`\`\n${output.slice(0, 1000) || '(no output)'}\n\`\`\`\n` +
-        `I'll stay quiet about it until it succeeds again — ask me to look into it or say "remove the ${job.name} job".`
-    );
+      `(exit ${exitCode}). Last error:\n\`\`\`\n${output.slice(0, 1000) || '(no output)'}\n\`\`\`\n` +
+      `I'll stay quiet about it until it succeeds again — ask me to look into it or say "remove the ${job.name} job".`;
+    const r = await sendDiscord(dm, warning);
+    logMessage({
+      direction: 'out',
+      text: `[job:${job.name}] ${warning}`,
+      session_id: null,
+      ok: r.ok,
+      error: r.ok ? null : (r.error ?? null),
+    });
+    if (r.ok) {
+      addPendingContext({
+        source: `job:${job.name}`,
+        kind: 'failure warning',
+        text: `The scheduled job "${job.name}" has failed ${FAILURE_NOTIFY_AT} times in a row (exit ${exitCode}); the user was warned once.`,
+        sessionKey: dmSessionKey(dm),
+      });
+    }
   }
 }
 
@@ -139,9 +165,31 @@ export async function runJobNow(id: number): Promise<JobRunResult | { error: str
     if (exitCode === 0 && message) {
       // Deliver to the job's channel; fall back to the owner's DM for legacy
       // rows created without one.
-      const dest = job.channel_id ?? (await ownerDmChannelId());
+      const ownerDm = job.channel_id ? null : await ownerDmChannelId();
+      const dest = job.channel_id ?? ownerDm;
       if (dest) {
-        sent = (await sendDiscord(dest, message)).ok;
+        const r = await sendDiscord(dest, message);
+        sent = r.ok;
+        // Record in the dashboard feed and queue as agent context — job
+        // output goes straight to Discord, so without this the agent never
+        // sees it.
+        logMessage({
+          direction: 'out',
+          text: `[job:${job.name}] ${message}`,
+          session_id: null,
+          ok: r.ok,
+          error: r.ok ? null : (r.error ?? null),
+        });
+        if (sent) {
+          addPendingContext({
+            source: `job:${job.name}`,
+            kind: 'scheduled job output',
+            text: message,
+            sessionKey: ownerDm
+              ? dmSessionKey(ownerDm)
+              : await sessionKeyForChannel(dest),
+          });
+        }
       }
       if (!sent) console.error(`[jobs] "${job.name}" produced a message but Discord delivery failed`);
     }

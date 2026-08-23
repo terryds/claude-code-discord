@@ -259,6 +259,36 @@ export async function downloadAttachment(
   }
 }
 
+// ── Session keys ────────────────────────────────────────────────────
+//
+// Claude resume ids live as settings rows keyed by conversation context.
+// The builders live here (not in the listener) so REST-only callers — the
+// /api/notify gateway, the job scheduler — can queue pending context under
+// the same keys the listener drains.
+
+export const SESSION_PREFIX = 'claude_session_id';
+
+export const dmSessionKey = (channelId: string) => `${SESSION_PREFIX}:dm:${channelId}`;
+export const channelSessionKey = (channelId: string) => `${SESSION_PREFIX}:channel:${channelId}`;
+export const threadSessionKey = (threadId: string) => `${SESSION_PREFIX}:thread:${threadId}`;
+
+const THREAD_TYPES = new Set([10, 11, 12]); // announcement/public/private thread
+const DM_TYPES = new Set([1, 3]); // DM, group DM
+
+/**
+ * The session key of the conversation living in a channel id, resolved via
+ * one REST lookup (DM → dm:, thread → thread:, else channel:). Falls back to
+ * the channel: form when Discord is unreachable.
+ */
+export async function sessionKeyForChannel(channelId: string): Promise<string> {
+  const r = await discordApi<{ type: number }>('GET', `/channels/${channelId}`);
+  if (r.ok) {
+    if (DM_TYPES.has(r.data.type)) return dmSessionKey(channelId);
+    if (THREAD_TYPES.has(r.data.type)) return threadSessionKey(channelId);
+  }
+  return channelSessionKey(channelId);
+}
+
 // ── Guild/channel introspection (dashboard) ─────────────────────────
 
 export type GuildInfo = { id: string; name: string };

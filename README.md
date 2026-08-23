@@ -174,9 +174,44 @@ The agent streams its progress (thinking, tool calls, results) into the conversa
 
 Images, audio, video, and any other file you attach are downloaded to `data/incoming/<attachment_id>-<name>` and the local path (plus MIME type) is appended to the prompt — Claude reads images/text/PDFs with its `Read` tool and handles the rest with its own tools (ffmpeg, transcription, …). Discord's standard 25 MB upload limit applies. Files are not auto-deleted — wipe `data/incoming/` periodically if you don't want them around.
 
+## Notification gateway (`POST /api/notify`)
+
+Other apps on the same host can push Discord alerts through the relay
+instead of carrying their own bot credentials:
+
+```bash
+curl -s -X POST http://127.0.0.1:8100/api/notify \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "**2 drafts ready**", "source": "myapp",
+       "kind": "draft digest", "context": "2 drafts ready: …"}'
+```
+
+- `text` (required) — the message; `source` (required) — who sent it, labels
+  it in the dashboard feed (`[myapp] …`).
+- `kind` (optional) — what kind of alert it is (e.g. `"draft digest"`,
+  `"deploy status"`); shown alongside the source in the feed and in the
+  agent's FYI list, so the agent knows who triggered the alert *and* what
+  it's about.
+- `channel_id` (optional) — deliver to a specific channel/thread instead of
+  the owner's DM. The agent-context note is queued for *that* conversation.
+- `format` — `"md"` (Discord-native Markdown, default), `"plain"` (same),
+  or `"html"` (accepted for compatibility with the Telegram relay's payloads
+  — tags are stripped to plain text before sending).
+- `context` (optional) — plain-text summary queued for the agent: the next
+  relayed turn in the target conversation starts with an FYI list of
+  notifications delivered while the agent was idle, so replies that
+  reference an alert ("expand the second draft") resolve. Defaults to `text`
+  (HTML stripped); pass `"no_context": true` for pure-noise pings (tests).
+  Scheduled-job output and `bin/notify` sends are queued the same way.
+- Returns non-2xx when the Discord send fails, so callers can retry.
+
+The endpoint only accepts loopback connections. To also require a shared
+secret (checked as the `X-Notify-Token` header), set a `notify_token` row in
+the settings table.
+
 ## Data
 
-Everything is stored in `data/app.db` (SQLite): `settings` (token, owner, sessions, model/effort, flags), `allowed_users`, `channel_modes`, `bookmarks`, `jobs`, and the `message_log`/`step_log` behind the dashboard's activity feed. To wipe state: stop the process, delete `data/app.db*` and `data/incoming/`, restart — or use **Reset everything** in the dashboard.
+Everything is stored in `data/app.db` (SQLite): `settings` (token, owner, sessions, model/effort, flags), `allowed_users`, `channel_modes`, `bookmarks`, `jobs`, `pending_context` (out-of-band notifications queued as agent context), and the `message_log`/`step_log` behind the dashboard's activity feed. To wipe state: stop the process, delete `data/app.db*` and `data/incoming/`, restart — or use **Reset everything** in the dashboard.
 
 ## Security
 

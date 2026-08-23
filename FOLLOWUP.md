@@ -38,6 +38,13 @@ Then verify, in this order (each verifies a subsystem I couldn't):
       tell them hi" → verifies member search + send + real `<@id>` ping.
       (Member search uses a REST endpoint that should not need a privileged
       intent — if it 403s, the Server Members intent toggle covers it.)
+- [ ] **Notify gateway + FYI context**: with the relay running and onboarded,
+      `curl -s -X POST http://127.0.0.1:8100/api/notify -H 'Content-Type: application/json' -d '{"text":"**test alert**","source":"smoke","kind":"test"}'`
+      → message lands in your DM and shows as `[smoke · test]` in the
+      dashboard feed. Then send the bot any DM — its prompt should carry the
+      "FYI — while you were idle" preamble (ask it "what notifications did I
+      just get?"). Also try `bin/notify "hello"` (routes through the gateway
+      when the relay is up).
 - [ ] **Job flow**: "check the BTC price every day at 5pm and tell me in
       #test-alerts if it's above 70k" → the agent should ASK for nothing
       (channel named), write a script, register with `--channel`, and confirm

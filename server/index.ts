@@ -17,6 +17,8 @@ import {
   addJob,
   updateJob,
   deleteJob,
+  logMessage,
+  addPendingContext,
 } from './db.ts';
 import {
   startJobScheduler,
@@ -34,6 +36,10 @@ import {
   inviteUrl,
   listGuilds,
   listGuildTextChannels,
+  ownerDmChannelId,
+  dmSessionKey,
+  sessionKeyForChannel,
+  sendDiscord,
 } from './discord.ts';
 import {
   isAuthMethod,
@@ -146,9 +152,101 @@ function normalizedUrlChanged(input: string, current: string): boolean {
   return strip(input) !== strip(current);
 }
 
-async function handleApi(req: Request, url: URL): Promise<Response> {
+/** Rough plain-text rendering of an HTML message, for Discord + agent context. */
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim();
+}
+
+/** The slice of Bun.Server the API needs (the full type is generic across bun-types versions). */
+type RequestIPServer = { requestIP(req: Request): { address: string } | null };
+
+async function handleApi(req: Request, url: URL, server?: RequestIPServer): Promise<Response> {
   const p = url.pathname.replace(/^\/api/, '') || '/';
   const m = req.method;
+
+  // Notification gateway for other services on this host: deliver to the
+  // owner's DM (or an explicit channel), record in the dashboard feed, and
+  // queue a plain-text summary the agent sees on that conversation's next
+  // turn. Loopback-only; contract in the README ("Notification gateway").
+  if (p === '/notify' && m === 'POST') {
+    const ip = server?.requestIP(req)?.address;
+    if (ip && ip !== '127.0.0.1' && ip !== '::1' && ip !== '::ffff:127.0.0.1') {
+      return err(401, 'notify is loopback-only');
+    }
+    const requiredToken = getSetting('notify_token');
+    if (requiredToken && req.headers.get('x-notify-token') !== requiredToken) {
+      return err(401, 'bad or missing X-Notify-Token header');
+    }
+    const body = await readBody<{
+      text?: unknown;
+      format?: unknown;
+      source?: unknown;
+      kind?: unknown;
+      context?: unknown;
+      no_context?: unknown;
+      channel_id?: unknown;
+      mode?: unknown;
+    }>(req);
+    const rawText = typeof body.text === 'string' ? body.text.trim() : '';
+    const source = typeof body.source === 'string' ? body.source.trim() : '';
+    const kind = typeof body.kind === 'string' && body.kind.trim() ? body.kind.trim() : null;
+    if (!rawText) return err(400, 'text is required');
+    if (!source) return err(400, 'source is required');
+    if (body.mode !== undefined && body.mode !== 'deliver') {
+      return err(400, 'unsupported mode — only "deliver" exists ("agent" is reserved)');
+    }
+    // Discord renders Markdown natively, so "md" and "plain" send as-is;
+    // "html" (the Telegram relay's default — accepted so the same payload
+    // works against both relays) is stripped to plain text first.
+    const format = body.format === undefined ? 'md' : body.format;
+    if (format !== 'html' && format !== 'plain' && format !== 'md') {
+      return err(400, 'format must be "md", "plain", or "html"');
+    }
+    const text = format === 'html' ? stripHtml(rawText) : rawText;
+    if (!text) return err(400, 'text is empty after HTML stripping');
+    if (!isOnboarded()) return err(503, 'relay not linked to a Discord owner yet');
+
+    const explicitChannel =
+      typeof body.channel_id === 'string' && body.channel_id.trim()
+        ? body.channel_id.trim()
+        : null;
+    const dm = explicitChannel ? null : await ownerDmChannelId();
+    const dest = explicitChannel ?? dm;
+    if (!dest) return err(503, "couldn't resolve the owner's DM channel");
+
+    const r = await sendDiscord(dest, text);
+    logMessage({
+      direction: 'out',
+      text: `[${source}${kind ? ` · ${kind}` : ''}] ${text}`,
+      session_id: null,
+      ok: r.ok,
+      error: r.ok ? null : (r.error ?? null),
+    });
+    // Non-2xx on failure so callers with retry semantics can retry later.
+    if (!r.ok) return err(502, r.error ?? 'Discord send failed');
+    if (body.no_context !== true) {
+      const context =
+        typeof body.context === 'string' && body.context.trim()
+          ? body.context.trim()
+          : stripHtml(text);
+      if (context) {
+        // Queue under the conversation the alert landed in, so the next
+        // message *there* gets the FYI.
+        const sessionKey = explicitChannel
+          ? await sessionKeyForChannel(explicitChannel)
+          : dmSessionKey(dest);
+        addPendingContext({ source, kind, text: context, sessionKey });
+      }
+    }
+    return json({ ok: true });
+  }
 
   if (p === '/status' && m === 'GET') {
     const cfg = getDiscordConfig();
@@ -662,11 +760,11 @@ function serveStatic(url: URL): Response {
 startListener();
 startJobScheduler();
 
-const fetchHandler = async (req: Request) => {
+const fetchHandler = async (req: Request, server?: RequestIPServer) => {
   const url = new URL(req.url);
   if (url.pathname.startsWith('/api')) {
     try {
-      return await handleApi(req, url);
+      return await handleApi(req, url, server);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error('[api] error:', msg);

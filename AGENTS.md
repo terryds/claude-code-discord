@@ -152,6 +152,16 @@ Prefer a fresh session with a self-contained prompt over `--resume`: resuming
 the relay's live session from a background job can race with a run the relay
 starts at the same moment.
 
+### Other local apps: push through `POST /api/notify`
+
+When you build an app on this host that should alert the user over Discord,
+don't give it its own bot plumbing — have it POST to the relay's
+loopback-only notification gateway,
+`http://127.0.0.1:<relay port>/api/notify` (body:
+`{text, source, format?, kind?, context?, channel_id?}`). Read the
+"Notification gateway" section of the README for the field contract before
+wiring it up.
+
 ### Recurring checks ("watch X", "alert me when…"): write a script, register a job
 
 When the user asks to watch/monitor/check something on a schedule, do **not**
