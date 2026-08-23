@@ -85,7 +85,7 @@ async function recordRunOutcome(job: Job, exitCode: number, output: string): Pro
 
 /**
  * Execute a job's script once, record the outcome, and deliver non-empty
- * stdout to Telegram. Used by both scheduled fires and the run-now API.
+ * stdout to Discord. Used by both scheduled fires and the run-now API.
  */
 export async function runJobNow(id: number): Promise<JobRunResult | { error: string }> {
   const job = getJob(id);

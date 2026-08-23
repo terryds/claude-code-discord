@@ -1,5 +1,5 @@
 // Self-update: check git for new commits and run bin/safe-update-relay from
-// the dashboard or the /update Telegram command.
+// the dashboard or the /update Discord command.
 //
 // The script is spawned fully detached (setsid + nohup) because it restarts
 // this very process via pm2 mid-flight — a child tied to our lifetime would

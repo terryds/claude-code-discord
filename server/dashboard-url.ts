@@ -1,5 +1,5 @@
 /**
- * Best-effort reachable URL for the dashboard, for inclusion in Telegram
+ * Best-effort reachable URL for the dashboard, for inclusion in Discord
  * messages. The user reads those on their phone, so `localhost` links are
  * dead on arrival — and a LAN/VPN IP is little better (wrong network, goes
  * stale). Only the machine's full domain name (`hostname -f`) is trusted,

@@ -8,7 +8,7 @@
 #   bun        — runtime, build, start
 #   node, npm  — only as the vehicle for pm2
 #   pm2        — process manager for production
-#   jq, sqlite3 — used by bin/safe-update-relay (Telegram notify reads app.db)
+#   jq, sqlite3 — used by bin/safe-update-relay and bin/notify (read app.db)
 #   python3    — PTY bridge for in-dashboard Claude subscription sign-in
 CORE_DEPS=(git curl bun node npm pm2 jq sqlite3 python3)
 

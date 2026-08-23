@@ -1,6 +1,6 @@
 /**
  * Watches the Claude Code JSONL session file and emits parsed step events
- * so the tg-listener can forward live progress to Telegram.
+ * so the discord-listener can forward live progress to Discord.
  */
 import { watch, type FSWatcher } from 'node:fs';
 import { open, type FileHandle } from 'node:fs/promises';

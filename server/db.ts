@@ -33,7 +33,7 @@ db.run(`
 db.run('CREATE INDEX IF NOT EXISTS idx_message_log_created_at ON message_log(created_at DESC)');
 
 // Intermediate steps streamed from Claude during a run (thinking, tool calls,
-// tool results) — the same events forwarded live to Telegram. Final text
+// tool results) — the same events forwarded live to Discord. Final text
 // replies are NOT stored here; they live in message_log as `out` rows.
 db.run(`
   CREATE TABLE IF NOT EXISTS step_log (
@@ -422,7 +422,7 @@ export type FeedEvent =
 
 /**
  * Merged, time-ordered feed of messages and steps — the dashboard equivalent of
- * the live Telegram stream. Returns the most recent `limit` events newest-first.
+ * the live Discord stream. Returns the most recent `limit` events newest-first.
  */
 export function recentFeed(limit = 300): FeedEvent[] {
   const rows = db

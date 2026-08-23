@@ -468,6 +468,11 @@ function JobsCard() {
               <div className="flex items-baseline gap-2 flex-wrap">
                 <span className="font-medium text-sm">{j.name}</span>
                 <code className="text-xs text-zinc-400">{j.schedule} UTC</code>
+                {j.channel_id && (
+                  <span className="text-xs text-zinc-500" title="Delivery channel">
+                    → <code className="text-zinc-400">{j.channel_id}</code>
+                  </span>
+                )}
                 {!j.enabled && (
                   <span className="text-xs text-zinc-500">(paused)</span>
                 )}
