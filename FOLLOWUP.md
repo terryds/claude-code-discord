@@ -51,10 +51,9 @@ Then verify, in this order (each verifies a subsystem I couldn't):
 `git pull` — which fails until the repo has a remote. You said **don't push to
 GitHub yet**, so:
 
-- When you're ready: create the (private?) repo — you chose the name
-  **`claude-code-discord-coworker`** — push, and set `origin`. Until then,
-  treat `/update` as non-functional (it will report a failed `git pull` and
-  leave the relay untouched, by design).
+- ✅ Done: public repo at https://github.com/terryds/claude-code-discord with
+  `origin` set — `/update`, the Updates card, and `bin/safe-update-relay` are
+  now functional.
 
 ## 3. Deployment decisions
 

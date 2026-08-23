@@ -94,7 +94,7 @@ bin/doctor         # read-only: report what's present / missing
 
 ```bash
 cd ~
-git clone <your-repo-url> claude-code-discord
+git clone https://github.com/terryds/claude-code-discord.git claude-code-discord
 cd claude-code-discord
 bun install
 bun run build

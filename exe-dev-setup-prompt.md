@@ -12,7 +12,7 @@ Set up and run the "claude-code-discord-coworker" project on this VM, then give 
 
 It's a self-hosted relay that forwards Discord messages to Claude Code running here and sends replies back. Stack: Bun + React/Vite + Tailwind + SQLite + discord.js. The `claude` CLI is already installed on this image — do NOT reinstall it, and do NOT try to log it in from the terminal. Authentication (subscription sign-in or API key) is done in the dashboard during onboarding.
 
-1. Clone <YOUR_REPO_URL> into ~/claude-code-discord and cd into it.
+1. Clone https://github.com/terryds/claude-code-discord.git into ~/claude-code-discord and cd into it.
 2. Run `bin/doctor`. If any core dependency is missing (bun, node, npm, pm2, git, jq, sqlite3, python3), run `bin/install` (idempotent, uses sudo) and re-check. Do NOT touch the claude CLI. (python3 is needed for Claude's in-dashboard subscription sign-in.)
 3. Build: `bun install` then `bun run build`.
 4. Start it under pm2 on port 8100 with bun as the interpreter:
