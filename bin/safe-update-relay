@@ -15,7 +15,7 @@
 #   RELAY_PROCESS_NAME   pm2 process name      (default: claude-code-discord-coworker)
 #   RELAY_REPO_DIR       repo checkout to pull (default: the repo this script is in)
 #
-# Notifies the linked Telegram chat at the end with a status summary or error.
+# Notifies the owner's Discord DM at the end with a status summary or error.
 # Does NOT proceed past a failed step — if pull or build fails, the running
 # relay is left untouched so you don't take working state offline.
 
@@ -58,14 +58,21 @@ START_TS=$(date +%s%3N)
 
 notify() {
   local msg="$1"
-  local token chat_id
-  token=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='telegram_bot_token'" 2>/dev/null || true)
-  chat_id=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='telegram_chat_id'" 2>/dev/null || true)
-  [ -z "$token" ] || [ -z "$chat_id" ] && return 0
-  curl -s --max-time 10 -X POST "https://api.telegram.org/bot${token}/sendMessage" \
-    -H "Content-Type: application/json" \
-    -d "$(jq -n --arg cid "$chat_id" --arg t "$msg" \
-      '{chat_id: $cid, text: $t, parse_mode: "HTML", disable_web_page_preview: true}')" \
+  local token channel
+  token=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='discord_bot_token'" 2>/dev/null || true)
+  channel=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='discord_dm_channel_id'" 2>/dev/null || true)
+  if [ -z "$channel" ]; then
+    local owner
+    owner=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='discord_owner_id'" 2>/dev/null || true)
+    [ -z "$token" ] || [ -z "$owner" ] && return 0
+    channel=$(curl -s --max-time 10 -X POST "https://discord.com/api/v10/users/@me/channels" \
+      -H "Authorization: Bot $token" -H 'Content-Type: application/json' \
+      -d "$(jq -n --arg id "$owner" '{recipient_id: $id}')" | jq -r '.id // empty')
+  fi
+  [ -z "$token" ] || [ -z "$channel" ] && return 0
+  curl -s --max-time 10 -X POST "https://discord.com/api/v10/channels/${channel}/messages" \
+    -H "Authorization: Bot $token" -H "Content-Type: application/json" \
+    -d "$(jq -n --arg t "$msg" '{content: $t, allowed_mentions: {parse: []}, flags: 4}')" \
     >/dev/null
 }
 
@@ -73,8 +80,8 @@ fail() {
   local step="$1"
   local detail="$2"
   write_state failed "$step" "$detail"
-  notify "$(printf '❌ <b>Update failed at: %s</b>\n<pre>%s</pre>\nRelay left untouched.' \
-    "$step" "$(echo "$detail" | head -c 1500 | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')")"
+  notify "$(printf '❌ **Update failed at: %s**\n```\n%s\n```\nRelay left untouched.' \
+    "$step" "$(echo "$detail" | head -c 1500)")"
   exit 1
 }
 
@@ -121,10 +128,10 @@ write_state success "done" ""
 
 # Step 6: notify success
 if [ "$OLD_SHA" = "$NEW_SHA" ]; then
-  notify "$(printf '✅ <b>Relay updated</b>\nNo new commits. Rebuilt + restarted in %sms.' "$ELAPSED_MS")"
+  notify "$(printf '✅ **Relay updated**\nNo new commits. Rebuilt + restarted in %sms.' "$ELAPSED_MS")"
 else
   DEP_NOTE=""
   [ "$NEEDS_INSTALL" = "1" ] && DEP_NOTE=" (deps installed)"
-  notify "$(printf '✅ <b>Relay updated</b>\nPulled %s commit(s): <code>%s</code> → <code>%s</code>%s.\nRebuilt + restarted in %sms.' \
+  notify "$(printf '✅ **Relay updated**\nPulled %s commit(s): `%s` → `%s`%s.\nRebuilt + restarted in %sms.' \
     "$COMMITS" "$OLD_SHA" "$NEW_SHA" "$DEP_NOTE" "$ELAPSED_MS")"
 fi

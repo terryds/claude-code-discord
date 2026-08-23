@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# discord <subcommand> [args...] — Discord REST for the agent, via the bot token.
+#
+# Reads the bot token from the relay's settings DB (data/app.db), so it works
+# even while the relay is down. Output is compact JSON (pipe through jq).
+#
+# Subcommands:
+#   guilds                                    servers the bot is in
+#   channels <guild_id>                       text channels of a guild (id, name, type)
+#   channel-info <channel_id>                 one channel/thread (name, parent, guild)
+#   search-member <guild_id> <query>          find members by name prefix → id/username/nick
+#   member-info <guild_id> <user_id>          one member
+#   roles <guild_id>                          roles of a guild
+#   messages <channel_id> [limit]             recent messages, newest first (default 20)
+#   send <channel_id> [text...]               send Markdown (args or stdin, chunked;
+#                                             <@user_id> pings work, @everyone never)
+#   dm <user_id> [text...]                    open a DM with a user and send to it
+#   create-thread <channel_id> <message_id> <name>   start a public thread from a message
+#   react <channel_id> <message_id> <emoji>   add a reaction (unicode emoji)
+#
+# To mention someone in a message: find their id with search-member, then
+# include <@THEIR_ID> in the text you send.
+#
+# Env: RELAY_DB overrides the settings DB path.
+
+set -uo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DB="${RELAY_DB:-$REPO_DIR/data/app.db}"
+API="https://discord.com/api/v10"
+
+usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+if [ $# -lt 1 ]; then usage; exit 1; fi
+CMD="$1"; shift
+
+TOKEN="$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='discord_bot_token'" 2>/dev/null || true)"
+if [ -z "$TOKEN" ]; then
+  echo "discord: no discord_bot_token in $DB" >&2
+  exit 1
+fi
+
+# api <method> <path> [json-body] → prints response body; fails on HTTP error.
+api() {
+  local method="$1" path="$2" body="${3:-}"
+  local args=(-s --max-time 20 -X "$method" "$API$path" -H "Authorization: Bot $TOKEN")
+  if [ -n "$body" ]; then
+    args+=(-H 'Content-Type: application/json' -d "$body")
+  elif [ "$method" = "PUT" ] || [ "$method" = "POST" ]; then
+    args+=(-H 'Content-Length: 0') # bodyless PUT/POST would 411 otherwise
+  fi
+  local resp
+  resp="$(curl "${args[@]}")"
+  # Discord errors carry a "code"+"message" object (and no expected fields).
+  if echo "$resp" | jq -e 'type == "object" and has("message") and has("code")' >/dev/null 2>&1; then
+    echo "discord: $(echo "$resp" | jq -r '.message')" >&2
+    return 1
+  fi
+  echo "$resp"
+}
+
+# Read message text from args or stdin; empty → silent no-op.
+read_text() {
+  if [ $# -gt 0 ]; then
+    printf '%s' "$*"
+  else
+    cat
+  fi
+}
+
+# send_to <channel_id> <text> — chunked Markdown send.
+send_to() {
+  local channel="$1" msg="$2" chunk body
+  if [[ "$msg" != *[![:space:]]* ]]; then return 0; fi
+  while [ -n "$msg" ]; do
+    chunk="${msg:0:1900}"
+    msg="${msg:1900}"
+    body="$(jq -n --arg t "$chunk" '{content: $t, allowed_mentions: {parse: ["users"]}}')"
+    api POST "/channels/$channel/messages" "$body" >/dev/null || return 1
+  done
+  echo '{"ok":true}'
+}
+
+case "$CMD" in
+  guilds)
+    api GET "/users/@me/guilds" | jq -c '[.[] | {id, name}]'
+    ;;
+  channels)
+    GUILD="${1:?usage: discord channels <guild_id>}"
+    api GET "/guilds/$GUILD/channels" | jq -c '[.[] | select(.type == 0 or .type == 5) | {id, name, type}]'
+    ;;
+  channel-info)
+    CH="${1:?usage: discord channel-info <channel_id>}"
+    api GET "/channels/$CH" | jq -c '{id, name, type, guild_id: (.guild_id // null), parent_id: (.parent_id // null)}'
+    ;;
+  search-member)
+    GUILD="${1:?usage: discord search-member <guild_id> <query>}"
+    QUERY="${2:?usage: discord search-member <guild_id> <query>}"
+    api GET "/guilds/$GUILD/members/search?query=$(jq -rn --arg q "$QUERY" '$q|@uri')&limit=10" |
+      jq -c '[.[] | {id: .user.id, username: .user.username, global_name: (.user.global_name // null), nick: (.nick // null)}]'
+    ;;
+  member-info)
+    GUILD="${1:?usage: discord member-info <guild_id> <user_id>}"
+    USER="${2:?usage: discord member-info <guild_id> <user_id>}"
+    api GET "/guilds/$GUILD/members/$USER" |
+      jq -c '{id: .user.id, username: .user.username, global_name: (.user.global_name // null), nick: (.nick // null), roles}'
+    ;;
+  roles)
+    GUILD="${1:?usage: discord roles <guild_id>}"
+    api GET "/guilds/$GUILD/roles" | jq -c '[.[] | {id, name}]'
+    ;;
+  messages)
+    CH="${1:?usage: discord messages <channel_id> [limit]}"
+    LIMIT="${2:-20}"
+    api GET "/channels/$CH/messages?limit=$LIMIT" |
+      jq -c '[.[] | {id, author: .author.username, author_id: .author.id, content, timestamp, attachments: [.attachments[]?.url]}]'
+    ;;
+  send)
+    CH="${1:?usage: discord send <channel_id> [text...]}"; shift
+    send_to "$CH" "$(read_text "$@")"
+    ;;
+  dm)
+    USER="${1:?usage: discord dm <user_id> [text...]}"; shift
+    CH="$(api POST "/users/@me/channels" "$(jq -n --arg id "$USER" '{recipient_id: $id}')" | jq -r '.id')"
+    [ -n "$CH" ] || exit 1
+    send_to "$CH" "$(read_text "$@")"
+    ;;
+  create-thread)
+    CH="${1:?usage: discord create-thread <channel_id> <message_id> <name>}"
+    MSGID="${2:?message_id required}"
+    NAME="${3:?name required}"
+    api POST "/channels/$CH/messages/$MSGID/threads" \
+      "$(jq -n --arg n "${NAME:0:100}" '{name: $n, auto_archive_duration: 1440}')" |
+      jq -c '{id, name}'
+    ;;
+  react)
+    CH="${1:?usage: discord react <channel_id> <message_id> <emoji>}"
+    MSGID="${2:?message_id required}"
+    EMOJI="${3:?emoji required}"
+    api PUT "/channels/$CH/messages/$MSGID/reactions/$(jq -rn --arg e "$EMOJI" '$e|@uri')/@me" "" >/dev/null &&
+      echo '{"ok":true}'
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    echo "discord: unknown subcommand '$CMD'" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

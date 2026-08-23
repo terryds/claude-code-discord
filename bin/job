@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# job add --name <name> --schedule "<cron>" [--desc <text>] <script-path>
+# job add --name <name> --schedule "<cron>" --channel <channel_id> [--desc <text>] <script-path>
 # job list
 # job run <name-or-id>
 # job remove <name-or-id>
@@ -7,11 +7,16 @@
 #
 # Manage scheduled watcher jobs — scripts (usually under data/jobs/<name>/)
 # that the relay runs on a cron schedule, sending any non-empty stdout to the
-# linked Telegram chat. Empty stdout = nothing to report = no message.
+# job's Discord channel. Empty stdout = nothing to report = no message.
+#
+# --channel is REQUIRED on first add: the Discord channel (or thread, or DM
+# channel) the job's output is delivered to. The user must have named the
+# destination — never assume one.
 #
 # The schedule is a standard 5-field cron expression interpreted in **UTC**.
-# `add` is idempotent by name: re-adding updates the schedule/script in place.
-# `run` fires the job once right now (and DOES deliver its output to Telegram
+# `add` is idempotent by name: re-adding updates the schedule/script in place
+# (--channel may then be omitted to keep the existing delivery channel).
+# `run` fires the job once right now (and DOES deliver its output to Discord
 # — to test a script silently, execute it directly instead).
 #
 # Prefers the relay's HTTP API; if the relay isn't running, falls back to
@@ -33,6 +38,7 @@ NAME=""
 SCHEDULE=""
 DESC=""
 SCRIPT=""
+CHANNEL=""
 TARGET=""
 
 case "$MODE" in
@@ -42,6 +48,7 @@ case "$MODE" in
         --name)     NAME="${2:?--name needs a value}"; shift 2 ;;
         --schedule) SCHEDULE="${2:?--schedule needs a value}"; shift 2 ;;
         --desc)     DESC="${2:?--desc needs a value}"; shift 2 ;;
+        --channel)  CHANNEL="${2:?--channel needs a value}"; shift 2 ;;
         *)          SCRIPT="$1"; shift ;;
       esac
     done
@@ -111,7 +118,7 @@ case "$MODE" in
 
   add)
     if [ -z "$NAME" ] || [ -z "$SCHEDULE" ] || [ -z "$SCRIPT" ]; then
-      echo "job: usage: job add --name <name> --schedule \"<cron>\" [--desc <text>] <script-path>" >&2
+      echo "job: usage: job add --name <name> --schedule \"<cron>\" --channel <channel_id> [--desc <text>] <script-path>" >&2
       exit 1
     fi
     if [ ! -f "$SCRIPT" ]; then
@@ -120,8 +127,9 @@ case "$MODE" in
     fi
     SCRIPT="$(cd "$(dirname "$SCRIPT")" && pwd)/$(basename "$SCRIPT")"
     if [ -n "$BASE" ]; then
-      BODY="$(jq -n --arg n "$NAME" --arg s "$SCHEDULE" --arg d "$DESC" --arg p "$SCRIPT" \
-        '{name: $n, schedule: $s, description: $d, script_path: $p}')"
+      BODY="$(jq -n --arg n "$NAME" --arg s "$SCHEDULE" --arg d "$DESC" --arg p "$SCRIPT" --arg c "$CHANNEL" \
+        '{name: $n, schedule: $s, description: $d, script_path: $p}
+         + (if $c != "" then {channel_id: $c} else {} end)')"
       RESP="$(curl -s --max-time 15 -X POST "$BASE/jobs" \
         -H 'Content-Type: application/json' -d "$BODY")"
       if echo "$RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
@@ -133,6 +141,13 @@ case "$MODE" in
         exit 1
       fi
     else
+      if [ -z "$CHANNEL" ]; then
+        EXISTING="$(sqlite3 "$DB" "SELECT channel_id FROM jobs WHERE name = '$(Q "$NAME")'" 2>/dev/null || true)"
+        if [ -z "$EXISTING" ]; then
+          echo "job: --channel <channel_id> is required (where should the output be delivered?)" >&2
+          exit 1
+        fi
+      fi
       NOW="$(date +%s)000"
       sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS jobs (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,6 +155,7 @@ case "$MODE" in
           description TEXT NOT NULL DEFAULT '',
           schedule TEXT NOT NULL,
           script_path TEXT NOT NULL,
+          channel_id TEXT,
           enabled INTEGER NOT NULL DEFAULT 1,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
@@ -147,11 +163,12 @@ case "$MODE" in
           last_exit_code INTEGER,
           last_output TEXT,
           consecutive_failures INTEGER NOT NULL DEFAULT 0);
-        INSERT INTO jobs (name, description, schedule, script_path, enabled, created_at, updated_at)
-        VALUES ('$(Q "$NAME")', '$(Q "$DESC")', '$(Q "$SCHEDULE")', '$(Q "$SCRIPT")', 1, $NOW, $NOW)
+        INSERT INTO jobs (name, description, schedule, script_path, channel_id, enabled, created_at, updated_at)
+        VALUES ('$(Q "$NAME")', '$(Q "$DESC")', '$(Q "$SCHEDULE")', '$(Q "$SCRIPT")', NULLIF('$(Q "$CHANNEL")', ''), 1, $NOW, $NOW)
         ON CONFLICT(name) DO UPDATE SET
           schedule = excluded.schedule,
           script_path = excluded.script_path,
+          channel_id = COALESCE(excluded.channel_id, channel_id),
           description = CASE WHEN excluded.description != '' THEN excluded.description ELSE description END,
           updated_at = excluded.updated_at;"
       echo "job registered (direct DB — relay will schedule it on next boot): $NAME ($SCHEDULE, UTC)"
@@ -170,7 +187,7 @@ case "$MODE" in
       EXIT="$(echo "$RESP" | jq -r '.exit_code')"
       SENT="$(echo "$RESP" | jq -r '.sent')"
       OUT="$(echo "$RESP" | jq -r '.output')"
-      echo "exit $EXIT, message sent to Telegram: $SENT"
+      echo "exit $EXIT, message sent to Discord: $SENT"
       if [ -n "$OUT" ]; then printf '%s\n' "--- output ---" "$OUT"; fi
     else
       echo "job: run failed: $RESP" >&2

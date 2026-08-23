@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
-# notify [--chat <chat_id>] [--thread <thread_id>] [--md|--html] [--dry-run] [message...]
+# notify [--channel <channel_id>] [--md] [--dry-run] [message...]
 #
-# Push a message to the linked Telegram chat, independent of the relay
-# process. Reads the bot token and default chat id from the relay's settings
-# DB (data/app.db), same as safe-update-relay — so it works even while the
-# relay is down or mid-restart.
+# Push a message to Discord, independent of the relay process. Reads the bot
+# token (and the owner's DM channel) from the relay's settings DB
+# (data/app.db), same as safe-update-relay — so it works even while the relay
+# is down or mid-restart.
+#
+# Default target is the OWNER'S DM. Scheduled jobs must NOT call this — their
+# stdout is delivered by the scheduler to the job's own channel; notify is for
+# ad-hoc proactive messages ("tell me later" timers, deploy pings).
 #
 # Message comes from the args, or from stdin when no message args are given
-# (e.g. `claude -p "..." | bin/notify`). Long messages are sent in chunks.
+# (e.g. `claude -p "..." | bin/notify`). Discord renders Markdown natively;
+# long messages are sent in 1900-char chunks. @everyone/@here and role pings
+# are always neutralized.
 #
 # Options:
-#   --chat <id>     target chat id (default: the linked telegram_chat_id)
-#   --thread <id>   message_thread_id, for linked group topics
-#   --md            send as a rich message (sendRichMessage, GitHub-Flavored
-#                   Markdown — best for agent output; falls back to plain
-#                   text if the API rejects it)
-#   --html          send with parse_mode=HTML (default: plain text — safest
-#                   for arbitrary/piped output, which HTML mode would reject)
+#   --channel <id>  target channel or thread id (default: the owner's DM)
+#   --md            accepted for compatibility — Discord messages are already
+#                   Markdown, so this is a no-op
 #   --dry-run       print the request bodies instead of sending
 #
 # Env: RELAY_DB overrides the settings DB path.
@@ -25,109 +27,78 @@ set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="${RELAY_DB:-$REPO_DIR/data/app.db}"
+API="https://discord.com/api/v10"
 
-CHAT_ID=""
-THREAD_ID=""
-HTML=0
-MD=0
+CHANNEL_ID=""
 DRY_RUN=0
 MSG_ARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --chat)    CHAT_ID="${2:?--chat needs a value}"; shift 2 ;;
-    --thread)  THREAD_ID="${2:?--thread needs a value}"; shift 2 ;;
-    --md)      MD=1; shift ;;
-    --html)    HTML=1; shift ;;
+    --channel) CHANNEL_ID="${2:?--channel needs a value}"; shift 2 ;;
+    --md)      shift ;; # no-op: Discord is Markdown-native
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         MSG_ARGS+=("$1"); shift ;;
   esac
 done
-
-if [ "$MD" = 1 ] && [ "$HTML" = 1 ]; then
-  echo "notify: --md and --html are mutually exclusive" >&2
-  exit 1
-fi
 
 if [ ${#MSG_ARGS[@]} -gt 0 ]; then
   MSG="${MSG_ARGS[*]}"
 else
   MSG="$(cat)"
 fi
-# Empty message → silent no-op, so `agent-check | notify` cron jobs that
-# output nothing on quiet runs don't error or trigger cron mail. (Glob match,
-# not ${MSG//…/} substitution: the latter is quadratic in bash and hangs for
-# minutes on large piped input.)
+# Empty message → silent no-op, so piped callers that output nothing on quiet
+# runs don't error. (Glob match, not ${MSG//…/} substitution: the latter is
+# quadratic in bash and hangs for minutes on large piped input.)
 if [[ "$MSG" != *[![:space:]]* ]]; then
   exit 0
 fi
 
-TOKEN="$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='telegram_bot_token'" 2>/dev/null || true)"
-if [ -z "$CHAT_ID" ]; then
-  CHAT_ID="$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='telegram_chat_id'" 2>/dev/null || true)"
-fi
+TOKEN="$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='discord_bot_token'" 2>/dev/null || true)"
 if [ -z "$TOKEN" ]; then
-  echo "notify: no telegram_bot_token in $DB" >&2
-  exit 1
-fi
-if [ -z "$CHAT_ID" ]; then
-  echo "notify: no chat id — link a chat in the dashboard or pass --chat" >&2
+  echo "notify: no discord_bot_token in $DB" >&2
   exit 1
 fi
 
-# Telegram caps plain messages at 4096 UTF-16 code units and rich messages at
-# 32768 UTF-8 characters; chunk conservatively (bash slices by codepoint, and
-# emoji count double in UTF-16).
-MAX_PLAIN=3500
-MAX_MD=30000
-
-# tg_post <method> <body> → 0 if Telegram accepted; response in $RESP.
-tg_post() {
-  RESP="$(curl -s --max-time 15 -X POST \
-    "https://api.telegram.org/bot${TOKEN}/$1" \
-    -H 'Content-Type: application/json' -d "$2")"
-  echo "$RESP" | jq -e '.ok == true' >/dev/null 2>&1
-}
-
-# send_plain <text> — chunked sendMessage; honors $HTML; exits on failure.
-send_plain() {
-  local rest="$1" chunk body
-  while [ -n "$rest" ]; do
-    chunk="${rest:0:$MAX_PLAIN}"
-    rest="${rest:$MAX_PLAIN}"
-    body="$(jq -n --arg cid "$CHAT_ID" --arg t "$chunk" --arg tid "$THREAD_ID" \
-      --argjson html "$HTML" \
-      '{chat_id: $cid, text: $t, disable_web_page_preview: true}
-       + (if $tid != "" then {message_thread_id: ($tid | tonumber)} else {} end)
-       + (if $html == 1 then {parse_mode: "HTML"} else {} end)')"
-    if [ "$DRY_RUN" = "1" ]; then
-      echo "$body"
-      continue
-    fi
-    if ! tg_post sendMessage "$body"; then
-      echo "notify: send failed: $RESP" >&2
-      exit 1
-    fi
-  done
-}
-
-if [ "$MD" = 1 ]; then
-  while [ -n "$MSG" ]; do
-    CHUNK="${MSG:0:$MAX_MD}"
-    MSG="${MSG:$MAX_MD}"
-    BODY="$(jq -n --arg cid "$CHAT_ID" --arg t "$CHUNK" --arg tid "$THREAD_ID" \
-      '{chat_id: $cid, rich_message: {markdown: $t}}
-       + (if $tid != "" then {message_thread_id: ($tid | tonumber)} else {} end)')"
-    if [ "$DRY_RUN" = "1" ]; then
-      echo "$BODY"
-      continue
-    fi
-    if ! tg_post sendRichMessage "$BODY"; then
-      echo "notify: rich send failed ($RESP); falling back to plain text" >&2
-      send_plain "$CHUNK"
-    fi
-  done
-else
-  send_plain "$MSG"
+# Resolve the default target: the owner's DM channel (cached in settings; open
+# it via the API if missing and cache it back).
+if [ -z "$CHANNEL_ID" ]; then
+  CHANNEL_ID="$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='discord_dm_channel_id'" 2>/dev/null || true)"
 fi
+if [ -z "$CHANNEL_ID" ]; then
+  OWNER_ID="$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='discord_owner_id'" 2>/dev/null || true)"
+  if [ -z "$OWNER_ID" ]; then
+    echo "notify: no target — finish onboarding (owner link) or pass --channel" >&2
+    exit 1
+  fi
+  RESP="$(curl -s --max-time 15 -X POST "$API/users/@me/channels" \
+    -H "Authorization: Bot $TOKEN" -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg id "$OWNER_ID" '{recipient_id: $id}')")"
+  CHANNEL_ID="$(echo "$RESP" | jq -r '.id // empty')"
+  if [ -z "$CHANNEL_ID" ]; then
+    echo "notify: couldn't open the owner's DM: $RESP" >&2
+    exit 1
+  fi
+  sqlite3 "$DB" "INSERT INTO settings (key, value) VALUES ('discord_dm_channel_id', '$CHANNEL_ID')
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value" 2>/dev/null || true
+fi
+
+# Discord caps message content at 2000 chars; chunk conservatively.
+MAX_CHUNK=1900
+
+while [ -n "$MSG" ]; do
+  CHUNK="${MSG:0:$MAX_CHUNK}"
+  MSG="${MSG:$MAX_CHUNK}"
+  BODY="$(jq -n --arg t "$CHUNK" '{content: $t, allowed_mentions: {parse: ["users"]}}')"
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "$BODY"
+    continue
+  fi
+  RESP="$(curl -s --max-time 15 -X POST "$API/channels/$CHANNEL_ID/messages" \
+    -H "Authorization: Bot $TOKEN" -H 'Content-Type: application/json' -d "$BODY")"
+  if ! echo "$RESP" | jq -e '.id' >/dev/null 2>&1; then
+    echo "notify: send failed: $RESP" >&2
+    exit 1
+  fi
+done
