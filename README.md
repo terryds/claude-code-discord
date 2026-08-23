@@ -1,0 +1,449 @@
+# claude-code-telegram-assistant
+
+A tiny relay that forwards Telegram messages to a coding agent — [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) **or** [Codex](https://developers.openai.com/codex/cli) — running on your VPS, and sends the agent's response back. Single-user, self-hosted, no external services beyond Telegram and your local CLI.
+
+- **Stack**: [Bun](https://bun.sh) + React (Vite) + Tailwind + Wouter + `bun:sqlite`
+- **Two engines** — drive Claude Code or Codex; pick one in onboarding, switch anytime from the dashboard or the `/engine` Telegram command
+- **No Telegram SDK** — just `fetch` against the Bot API
+- **No vendor SDK** — spawns your local `claude` / `codex` CLI (inherits its auth)
+- **Session continuity** — `claude --resume` / `codex exec resume` keep the conversation across messages
+- **Guided onboarding** UI: choose engine + detect its CLI, paste bot token, capture your chat ID
+- **Group topics** — link any number of group forum topics (or whole groups) from the dashboard; the bot answers there in addition to your private chat, each with its own conversation
+- **Scheduled jobs** — ask the agent to "watch X" and it writes a watcher script and registers it on a cron schedule; the relay runs it and messages you only when there's something to report (no billed agent turn per check — see `/jobs`, the dashboard card, and [docs/scheduled-jobs.md](docs/scheduled-jobs.md))
+
+> Codex is driven via `codex exec --json` (one process per message, resumed by thread id) — the same one-shot-plus-resume model the relay already uses for Claude. It runs with `--dangerously-bypass-approvals-and-sandbox` to match Claude's `bypassPermissions`, so it works unattended. Keep the host's `codex` current — older CLIs may reject newer default models.
+
+## Prerequisites
+
+- [Bun](https://bun.sh) `>= 1.3.12`
+- The CLI for your chosen engine, installed on the machine that runs the relay.
+  You can **authenticate it from the dashboard** during onboarding (see
+  [Authentication](#authentication)), so it only needs to be on PATH:
+  - **Claude Code** — [install](https://docs.claude.com/en/docs/claude-code/overview); `claude --version` must work
+  - **Codex** — [install](https://developers.openai.com/codex/cli); `codex --version` must work
+- `python3` — only for Claude's in-dashboard subscription sign-in (it drives a
+  PTY). `bin/install` installs it; skip if you authenticate Claude another way.
+- A Telegram bot — create one with [@BotFather](https://t.me/BotFather) and
+  paste the token (default), or let onboarding create one for you via a **QR
+  scan** (Telegram managed bots; not supported by every Telegram app yet)
+
+## Local development
+
+```bash
+bun install
+bun run dev
+```
+
+This launches the server (port `3000`, hot-reload) and Vite (port `5173`, proxying `/api` to the server). Open <http://localhost:5173>.
+
+You'll be sent to `/onboarding`:
+
+1. **Choose your engine and authenticate it.** The page verifies the CLI is installed, then checks whether it's signed in. If not, pick **Subscription** (sign in straight from the dashboard — no terminal) or **API key** (paste a key; it's stored and injected when the relay runs). See [Authentication](#authentication).
+2. Connect your Telegram bot — two methods:
+   - **Paste a BotFather token (default).** The classic flow: the server
+     validates it via `getMe` and shows `@your_bot`.
+   - **Scan QR code.** Click **Generate QR code**, scan it with your phone,
+     and confirm in Telegram. Telegram creates a bot for you (managed bots,
+     Bot API 9.6+), the token flows back automatically, and your chat is
+     linked in the same step — done, skip step 3. Requires a reachable pairing
+     service (see `worker/README.md`; override with `TELEGRAM_ONBOARDING_URL`)
+     and a Telegram app that supports managed-bot creation (not all do yet —
+     notably some Android builds).
+3. (BotFather method only) Click **Start listening**, then open Telegram and message your bot. The first incoming message captures your chat ID and links it. The bot replies "✅ Chat linked".
+
+After that you're on the dashboard, where you can switch engine, manage agent authentication, toggle the relay, link a group topic, reset the agent session, view recent messages, or reset everything.
+
+## Linking group topics
+
+Besides your private chat, the relay can be bound to **any number of groups**,
+added one at a time — each either a specific forum topic (default) or an entire
+group. Replies go back to wherever the message came from (into the topic, using
+`message_thread_id`).
+
+Each source is its **own conversation**: the private chat and each group topic
+keep separate agent sessions, so contexts don't bleed into each other.
+`/new_session` and `/stop` only affect the conversation of the chat where you
+send them; switching engines or the dashboard's **Reset session** clears/stops
+them all. Group messages are prefixed with a short note telling the agent which
+group/topic it's replying in.
+
+Conversations also run **concurrently**: the group topic can be working on a
+task while you ask something else in the private chat. Within one conversation
+it's still one task at a time (a new message auto-stops that conversation's
+current run). Careful with two agents editing the same project simultaneously —
+the relay doesn't referee file conflicts.
+
+From the dashboard's **Group topics** card:
+
+1. Pick the link scope: **Specific topic** (default) or **Entire group**.
+2. Click **Add a group topic**.
+3. Add the bot to your group, and make sure it can see messages — by default
+   bots in groups receive nothing. Either disable privacy mode via
+   [@BotFather](https://t.me/BotFather) (`/setprivacy` → Disable) or make the
+   bot a group admin.
+4. Send any message in the target topic (or anywhere in the group, for
+   whole-group links). The relay captures the chat ID + topic ID and replies
+   "✅ Group linked!".
+
+In topic scope, messages outside a topic don't complete the link — the bot
+replies with a hint and keeps waiting, so you can create the group/topic *after*
+you start listening. Once linked:
+
+- **Specific topic** — the bot only reacts to messages in that exact topic;
+  other topics, General, and other groups are ignored.
+- **Entire group** — the bot reacts to every message in the group (including
+  all topics, replying in-thread).
+
+Every link shows as a row on the card with its own **Unlink** button; unlinking
+removes that link's conversation(s) and leaves everything else untouched.
+Capturing a chat+topic that's already linked just refreshes its name instead of
+duplicating it. Group commands work with the usual `/command@YourBot` form.
+
+## Authentication
+
+The relay spawns your local `claude` / `codex` CLI, so that CLI has to be
+authenticated. Onboarding (and the dashboard's agent-auth panel) detect this and
+offer two methods per engine, switchable anytime:
+
+- **Subscription** — sign in with your Claude or ChatGPT/Codex plan, from the
+  dashboard, no terminal:
+  - **Claude Code** drives `claude auth login` (this is why `python3` is needed
+    — it runs the CLI in a PTY). Click **Sign in with Claude** and authorize in
+    your browser; the CLI detects completion on its own (pasting the code the
+    page shows is a fallback). This signs in the host's `claude` itself, so the
+    CLI also works outside the relay — no separate terminal login needed.
+  - **Codex** drives `codex login --device-auth`. Click **Sign in with Codex**,
+    open the page, and enter the one-time code.
+- **API key** — paste an Anthropic / OpenAI key. It's stored in `data/app.db` and
+  injected as `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` when the relay runs (this is
+  pay-per-token API billing, not your subscription).
+
+Detection is cheap — `claude auth status` / `codex login status`, no model call.
+You can also authenticate the CLI yourself on the host (`claude auth login` or
+`codex login`) and the relay will pick it up.
+
+Older installs signed in via `claude setup-token`, which stored a token in
+`data/app.db` and injected it per-run. That token still works (it's injected as
+`CLAUDE_CODE_OAUTH_TOKEN` while present), and a new **Sign in with Claude**
+clears it in favor of the machine-wide login.
+
+## Production build
+
+```bash
+bun run build   # builds the client into dist/client/
+bun start       # starts the server on PORT (default 3000), serving API + client
+```
+
+The single Bun process serves both `/api/*` and the static React build on one port. Override the port with `PORT=8080 bun start`.
+
+## VPS setup with pm2
+
+These steps assume Ubuntu/Debian. Adjust paths as needed.
+
+### 1. Install dependencies
+
+The repo ships an installer for the system dependencies (bun, Node, pm2, git, jq, sqlite3, python3). After cloning, just run:
+
+```bash
+bin/install        # installs anything missing (Ubuntu/Debian, uses sudo)
+bin/doctor         # read-only: report what's present / missing
+```
+
+`bin/install` is idempotent (safe to re-run) and **does not** touch the agent CLIs — install Claude Code or Codex yourself (it prints the links). You don't have to log them in here: authentication can be done from the dashboard during onboarding (see [Authentication](#authentication)). This is also the "point your coding agent at the repo" path: an agent can run `bin/doctor`, then `bin/install`, then follow the agent-CLI hints.
+
+<details>
+<summary>Or install everything by hand</summary>
+
+```bash
+# Bun
+curl -fsSL https://bun.sh/install | bash
+exec $SHELL   # reload PATH
+
+# Node (for pm2). Any recent LTS works.
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# pm2 globally
+sudo npm install -g pm2
+
+# deploy-script helpers (+ python3 for Claude's in-dashboard sign-in)
+sudo apt install -y git jq sqlite3 python3
+
+# An agent CLI (pick one or both):
+npm install -g @anthropic-ai/claude-code   # Claude Code
+# Codex: see https://developers.openai.com/codex/cli
+```
+
+</details>
+
+You can authenticate your agent from the dashboard during onboarding (subscription sign-in or API key — see [Authentication](#authentication)), so this is optional. To do it on the host instead, run `claude` (follow the auth flow, then `/exit`) and/or `codex login`.
+
+### 2. Clone and build
+
+```bash
+cd ~
+git clone <your-fork-url> claude-code-telegram-assistant
+cd claude-code-telegram-assistant
+bun install
+bun run build
+```
+
+### 3. Start under pm2
+
+Create an ecosystem file so pm2 uses Bun as the interpreter:
+
+```js
+// ecosystem.config.cjs
+module.exports = {
+  apps: [
+    {
+      name: 'claude-code-telegram-assistant',
+      script: 'server/index.ts',
+      interpreter: '/home/YOUR_USER/.bun/bin/bun',
+      cwd: '/home/YOUR_USER/claude-code-telegram-assistant',
+      env: {
+        PORT: '3000',
+      },
+      max_restarts: 10,
+      restart_delay: 3000,
+    },
+  ],
+};
+```
+
+Replace `YOUR_USER` and verify the Bun path with `which bun`.
+
+```bash
+pm2 start ecosystem.config.cjs
+pm2 logs claude-code-telegram-assistant   # tail logs
+pm2 save                         # persist the process list
+pm2 startup                      # follow the printed instruction to enable on boot
+```
+
+**Or, without an ecosystem file** — start directly from the CLI:
+
+```bash
+cd ~/claude-code-telegram-assistant
+PORT=3000 pm2 start server/index.ts \
+  --name claude-code-telegram-assistant \
+  --interpreter "$(which bun)" \
+  --max-restarts 10 \
+  --restart-delay 3000
+
+pm2 save
+pm2 startup   # follow the printed instruction
+```
+
+`pm2 save` snapshots the env that was current at start time, so the `PORT` value persists across `pm2 resurrect` and reboots. If you change an env var later, restart with `pm2 restart claude-code-telegram-assistant --update-env`.
+
+Common pm2 commands:
+
+```bash
+pm2 status
+pm2 restart claude-code-telegram-assistant
+pm2 stop claude-code-telegram-assistant
+pm2 logs claude-code-telegram-assistant --lines 200
+```
+
+### 4. Expose the dashboard
+
+The dashboard has no authentication — it's intended to sit behind something. Two reasonable options:
+
+**Option A — SSH tunnel (simplest, no public exposure):**
+
+```bash
+ssh -L 3000:localhost:3000 your-vps
+# then open http://localhost:3000 in your browser
+```
+
+**Option B — Nginx with HTTP basic auth:**
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name claude.example.com;
+
+    # ssl_certificate ...;
+    # ssl_certificate_key ...;
+
+    auth_basic "Restricted";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Create the password file with `sudo htpasswd -c /etc/nginx/.htpasswd youruser`.
+
+### 5. Onboard
+
+Visit the dashboard (via tunnel or your domain), complete the three onboarding steps, and you're live. Send your bot any message — it will reach Claude Code on the VPS and reply.
+
+## Updating
+
+When you push a new version, deploy it on the VPS with:
+
+```bash
+cd ~/claude-code-telegram-assistant
+git pull
+bun install            # if dependencies changed
+bun run build          # rebuild the client
+pm2 restart claude-code-telegram-assistant
+```
+
+`pm2 restart` reuses the saved process config, so you don't need to repeat `pm2 save` unless you changed the start command or env vars (in which case use `pm2 restart claude-code-telegram-assistant --update-env` and re-run `pm2 save`).
+
+Your bot token, chat link, and Claude session ID live in `data/app.db` — they survive restarts and code updates.
+
+### Updating from a Telegram chat
+
+If you're asking the relayed agent itself to update the project (i.e. via Telegram), the plain `pm2 restart` step above won't work: it kills the `bun` process hosting your conversation, which kills the spawned agent, which aborts the in-flight tool — the update half-finishes and your reply is lost.
+
+The repo ships a deploy helper at [`bin/safe-update-relay`](bin/safe-update-relay) that handles this: it detaches into its own process group, delays briefly so the current reply flushes, runs `git pull` → `bun install` (if deps changed) → `bun run build` → `pm2 restart`, waits for the process to come back online, and pings the chat with the result. A failed pull/build aborts before the restart, leaving the running relay untouched. It also re-execs from `/tmp` first so the `git pull` can safely rewrite the in-repo script mid-deploy.
+
+```bash
+setsid nohup ~/claude-code-telegram-assistant/bin/safe-update-relay >/dev/null 2>&1 < /dev/null &
+```
+
+`setsid + nohup + &` keep it alive after `pm2 restart` kills its caller.
+
+Config via env vars (defaults shown):
+
+- `RELAY_PROCESS_NAME` — pm2 process name (default `claude-code-telegram-assistant`)
+- `RELAY_REPO_DIR` — checkout to deploy (default: auto-derived from the script's
+  own location, i.e. the repo it lives in)
+
+<details>
+<summary>One-time VPS migration (from an old name: <code>claude-code-telegram</code> or <code>coding-agent-telegram-relay</code>)</summary>
+
+The repo, dir, and pm2 process were renamed (twice: `claude-code-telegram` →
+`coding-agent-telegram-relay` → `claude-code-telegram-assistant`). If your VPS
+still uses an old name, after the first pull either rename things or override
+via env (substitute `coding-agent-telegram-relay` for `claude-code-telegram`
+below if that's the name you're on):
+
+```bash
+# Option A — keep old names, just override the pm2 process name per run:
+RELAY_PROCESS_NAME=claude-code-telegram ~/claude-code-telegram/bin/safe-update-relay
+
+# Option B — migrate to the new names (then the defaults just work):
+pm2 delete claude-code-telegram
+mv ~/claude-code-telegram ~/claude-code-telegram-assistant
+cd ~/claude-code-telegram-assistant
+pm2 start "bun start" --name claude-code-telegram-assistant   # re-add with your usual env (PORT, etc.)
+pm2 save
+```
+
+GitHub redirects the old repo URLs, so an existing checkout's `git pull` keeps
+working — but update the remote anyway:
+
+```bash
+git remote set-url origin https://github.com/terryds/claude-code-telegram-assistant.git
+```
+
+The old external `~/bin/safe-update-relay` can be deleted once the in-repo
+script is in use.
+
+</details>
+
+## Bot commands
+
+- `/start`, `/help` — show usage
+- `/stop` — interrupt the agent while it's working (kills the in-flight run)
+- `/new_session` — start a fresh conversation (forgets prior context)
+- `/engine` — show or switch the active engine (`/engine claude` / `/engine codex`)
+- `/skills` — list the agent skills available on this host
+- `/jobs` — list scheduled watcher jobs (recurring checks the agent set up)
+- `/update` — pull the latest relay version, rebuild, and restart
+
+### Interrupting a run
+
+The agent streams its progress (thinking, tool calls, results) back to the chat as it works, and the listener keeps receiving messages the whole time. To interrupt:
+
+- Send `/stop` to cancel the current run of *that conversation* and leave things idle (a run started from the group topic keeps going).
+- Send a new prompt while the agent is still working — it auto-stops that conversation's running task and starts the new one (auto-stop & replace).
+
+Stopping is a hard process kill: any file edits Claude already made stay on disk, only the in-flight turn is cut. The interrupted turn isn't saved to the session, so the next message resumes from the last *completed* turn.
+
+## Sending photos
+
+Photos are downloaded to `data/incoming/<file_unique_id>.jpg` and the local path is appended to the prompt. Claude views the file with its `Read` tool. The caption (if any) is used as the user message; with no caption the agent is asked to describe the image. Files are not auto-deleted — wipe `data/incoming/` periodically if you don't want them around.
+
+## Sending videos
+
+Videos, round video notes, animations, and `video/*` documents work just like photos: the file is downloaded to `data/incoming/<file_unique_id>` and its local path is appended to the prompt. Claude decides what to do with it using its own tools (extract frames or audio with `ffmpeg`, etc.) — nothing is pre-processed. The caption (if any) is used as the user message. Telegram bots can't download files larger than 20 MB, so bigger videos are rejected.
+
+## Sending files
+
+Any other document (`.csv`, `.md`, `.txt`, `.pdf`, spreadsheets, code, archives, …) works the same way: it's downloaded to `data/incoming/<file_unique_id>-<original name>` (the original filename is kept, sanitized) and the local path — plus the original name and MIME type — is appended to the prompt. Text files and PDFs are readable directly with Claude's `Read` tool; other formats are left to the agent's own tools. With no caption the agent is asked to summarize the file. The same 20 MB Telegram bot download limit applies.
+
+## Data
+
+Everything is stored in `data/app.db` (SQLite). Two tables:
+
+- `settings` — key/value store (bot token, chat ID, group link, session ID, relay enabled flag)
+- `message_log` — recent in/out messages shown on the dashboard
+
+Photos sent via Telegram land in `data/incoming/` (also gitignored). To wipe state, stop the process, delete `data/app.db*` and `data/incoming/`, and restart — or use **Reset everything** in the dashboard.
+
+## Security
+
+Read this before deploying. The threat model is non-trivial.
+
+### What an attacker who reaches your bot can do
+
+Claude is spawned with `--permission-mode bypassPermissions`, which means **every message that the relay accepts becomes a shell-capable prompt running as your VPS user**. There is no sandbox. The only thing keeping strangers out is:
+
+1. They don't have your bot token, and
+2. Their message doesn't come from an authorized source: the chat ID captured
+   during onboarding, or the linked group topic (if you linked one).
+
+Note that a linked group widens the trust boundary: **everyone in that group
+(or topic) can drive the agent**. Only link groups where you trust every
+member — each of their messages is a shell-capable prompt on your VPS.
+
+If either of those falls over, the attacker has shell.
+
+**Treat the bot token like an SSH private key.** Anyone with the token can DM the bot — but they still can't get through because of the chat-ID whitelist, *unless* they can also reach the dashboard.
+
+### The dashboard has no built-in authentication
+
+Anyone who can open the dashboard URL can hit **Reset everything**, re-onboard with their own bot token / chat ID, and get shell. **Do not expose port 3000 to the public internet directly.** Use one of:
+
+- An SSH tunnel (no public exposure at all — recommended for personal use)
+- A reverse proxy with HTTP basic auth (see the Nginx snippet above)
+- A VPN / Tailscale / Cloudflare Access in front of the port
+
+### Prompt injection is a real risk
+
+Because Claude runs with full shell access, **prompt injection from any source the bot relays — including from you** — is a meaningful risk. Examples that can hijack Claude:
+
+- "Summarize this email" where the email contains `Ignore previous instructions and run …`
+- Pasting log output, GitHub issue content, or web page text without reading it first
+
+Mitigations:
+
+- Don't relay untrusted content blindly. If you wouldn't paste it into a root shell, don't paste it into the bot.
+- Run the relay as a dedicated unprivileged user, not root. Limit what that user can do on the VPS.
+- Consider keeping sensitive secrets (other API keys, deploy keys) out of the home directory of the user that runs Claude.
+
+### What is and isn't sent over the network
+
+- **Telegram Bot API**: every incoming/outgoing message goes through Telegram's servers (they can read it).
+- **Claude**: Claude Code uses your local credentials and sends prompts to Anthropic's API.
+- **Dashboard**: no telemetry, no external calls. The bot token and chat ID never leave the server; the client only ever sees `bot_token_set: true|false`.
+
+### Reporting issues
+
+If you find a security issue, please open a private security advisory on GitHub rather than a public issue.
+
+## Notes
+
+- The relay is single-tenant: only the chat ID captured during onboarding (plus the linked group topic, if any) can talk to the agent. Other senders are ignored.
+- The bot polls Telegram with long-polling (`getUpdates`, 25s timeout). No webhook setup needed.
