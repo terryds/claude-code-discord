@@ -23,7 +23,7 @@ It's a self-hosted relay that forwards Discord messages to Claude Code running h
 5. Confirm it's listening on 8100 with no errors (`pm2 logs claude-code-discord-coworker --lines 20`).
 6. Tell me the URL for port 8100 on this VM — that's the dashboard. Use the VM's full domain name (from `hostname -f`, e.g. https://<vm-name>.exe.xyz:8100) — do NOT give me an IP-address URL. I'll finish setup there myself: sign in to Claude (subscription, right in the page — or paste an API key), then create a Discord bot in the Developer Portal and paste its token (the page walks me through it, including the privileged intents and the invite link).
 
-Do NOT set the Discord bot token, and do NOT authenticate the claude CLI — those happen in the dashboard onboarding UI. Note the Discord connection is outbound-only (gateway WebSocket), so no inbound port besides the dashboard is needed.
+Do NOT set the Discord bot token, and do NOT authenticate the claude CLI — those happen in the dashboard onboarding UI.
 ```
 
 ## Run it
@@ -58,8 +58,7 @@ Then you're on the dashboard and the relay is live.
 
 - **The dashboard has no built-in auth.** Put exe.dev's access controls in
   front of port 8100 (don't expose it openly — anyone who reaches it can edit
-  the allowlist, re-onboard, and get a shell on the VM). Private mode is fine:
-  Discord needs no inbound port.
+  the allowlist, re-onboard, and get a shell on the VM).
 - Recommended specs: 2 CPU / 4 GB / 20 GB disk; Ubuntu image (auto-detected).
 - Auth (subscription login / API key), bot token, owner link, allowlist,
   channel modes, and sessions all live in `data/app.db` and survive restarts.
