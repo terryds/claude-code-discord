@@ -123,7 +123,9 @@ export const MAX_DISCORD_MESSAGE = 2000;
  * fence open gets it closed, and the next chunk reopens it.
  */
 export function splitMarkdown(text: string, max = MAX_DISCORD_MESSAGE): string[] {
-  const budget = max - 12; // room for a re-opened/closed fence per chunk
+  // Room for a re-opened fence (``` + language tag) at the top and a closing
+  // fence at the bottom of a chunk.
+  const budget = max - 40;
   const chunks: string[] = [];
   let rest = text;
   let openFence: string | null = null; // language of the fence left open

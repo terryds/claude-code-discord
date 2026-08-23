@@ -518,7 +518,7 @@ async function processMessage(msg: Message): Promise<void> {
 
   const isDM = !msg.guildId;
   const channel = msg.channel;
-  const isThread = channel.isThread();
+  const isThread = !isDM && channel.isThread();
 
   // Where the reply goes and which conversation it belongs to. May be
   // redirected into a newly created thread below.
