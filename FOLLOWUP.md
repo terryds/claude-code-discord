@@ -45,21 +45,19 @@ Then verify, in this order (each verifies a subsystem I couldn't):
       → message lands in #test-alerts. Also try a request **without** naming
       a channel — the agent must ask, not assume.
 
-## 2. Update flow needs a git remote
+## 2. Git remote — ✅ done
 
-`/update`, the dashboard's Updates card, and `bin/safe-update-relay` all do
-`git pull` — which fails until the repo has a remote. You said **don't push to
-GitHub yet**, so:
-
-- ✅ Done: public repo at https://github.com/terryds/claude-code-discord with
-  `origin` set — `/update`, the Updates card, and `bin/safe-update-relay` are
-  now functional.
+Public repo at https://github.com/terryds/claude-code-discord with `origin`
+set (secret-scanned across all commits first: no tokens/keys anywhere; the
+only personal traces are your public git identity and links to your
+already-public telegram repo). `/update`, the dashboard's Updates card, and
+`bin/safe-update-relay` are now functional.
 
 ## 3. Deployment decisions
 
 - Deploy target: same VPS as the Telegram relay? Port **8100** avoids the
   collision; pm2 name `claude-code-discord-coworker`. `exe-dev-setup-prompt.md`
-  is ready but contains `<YOUR_REPO_URL>` — fill it in after you push.
+  is ready to paste (repo URL filled in).
 - The dashboard has **no auth** (same as the Telegram one) — keep port 8100
   behind exe.dev private mode / a tunnel. Discord itself needs no inbound port.
 - `bin/doctor` on the VPS to confirm deps (it no longer checks for codex).
@@ -77,10 +75,13 @@ GitHub yet**, so:
 - The **`fable` model alias** and `--effort` flag were verified against the
   `claude` CLI on *this* machine — if the VPS runs an older CLI, update it.
 
-## 5. Nothing was pushed or published
+## 5. State of the world
 
-- 6 local commits on `main` in `~/playground/claude-code-discord` — review
-  with `git log -p`, or ask me to walk through any file.
+- Everything is on `main`, pushed to https://github.com/terryds/claude-code-discord —
+  review with `git log -p`, or ask me to walk through any file.
+- Note the repo is **public** and includes the planning/report docs (PLAN.md,
+  QUESTIONS.md, RESEARCH.md, BUILD-REPORT.md, this file). Harmless, but say
+  the word if you'd rather I remove them from the published repo.
 - The Telegram project (`~/playground/claude-code-telegram`) is untouched.
 - The scratch clone of hermes-agent lives in the session scratchpad and will
   disappear on its own.
