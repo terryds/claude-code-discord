@@ -1,27 +1,14 @@
 /**
- * Shared types and selection logic for pluggable coding-agent engines.
+ * Shared types + persisted auth config for the Claude Code engine.
  *
- * The relay can drive either Claude Code or Codex. Both follow the same model:
- * spawn a CLI once per Telegram message, stream intermediate steps (thinking,
- * tool calls, results) back live, and return a final result. Conversations are
- * continued by resuming a session id. A single global engine is active at a
- * time (stored in settings); the user switches it via the dashboard or the
- * `/engine` Telegram command.
+ * The relay drives Claude Code headlessly: spawn `claude -p` once per Discord
+ * message, stream intermediate steps (thinking, tool calls, results) back
+ * live, and return a final result. Conversations are continued by resuming a
+ * session id.
  */
 import { getSetting, setSetting, deleteSetting } from './db.ts';
 
-export type EngineId = 'claude' | 'codex';
-
-export const ENGINE_IDS: EngineId[] = ['claude', 'codex'];
-
-export const ENGINE_LABELS: Record<EngineId, string> = {
-  claude: 'Claude Code',
-  codex: 'Codex',
-};
-
-export function isEngineId(v: string): v is EngineId {
-  return v === 'claude' || v === 'codex';
-}
+export const ENGINE_LABEL = 'Claude Code';
 
 // ── Streamed steps ──────────────────────────────────────────────────
 
@@ -67,7 +54,7 @@ export type AuthMethod = 'subscription' | 'apikey';
 export type EngineAuth = {
   /** The probe completed a turn successfully — the CLI is usable. */
   authed: boolean;
-  /** The configured auth method for this engine. */
+  /** The configured auth method. */
   method: AuthMethod;
   /** Whether an API key is saved (only meaningful when method === 'apikey'). */
   hasKey: boolean;
@@ -75,19 +62,18 @@ export type EngineAuth = {
   error?: string;
 };
 
-/** Persisted auth setup for an engine, without running a probe. */
+/** Persisted auth setup, without running a probe. */
 export type AuthConfig = { method: AuthMethod; hasKey: boolean };
 
-/** One pluggable coding agent. */
+/** The engine surface the listener drives. */
 export interface Engine {
-  id: EngineId;
+  id: 'claude';
   label: string;
   /** Verify the CLI is installed and usable. */
   check(): Promise<EngineCheck>;
   /**
-   * Live-probe whether the CLI is authenticated, using the engine's configured
-   * auth method (subscription login, or an injected saved API key). Runs a
-   * tiny one-shot turn, so it is slow and consumes one request.
+   * Live-probe whether the CLI is authenticated, using the configured auth
+   * method (subscription login, or an injected saved API key).
    */
   checkAuth(): Promise<EngineAuth>;
   /**
@@ -103,53 +89,40 @@ export interface Engine {
   ): Promise<EngineResult>;
 }
 
-// ── Selection ───────────────────────────────────────────────────────
+// ── Auth config (persisted) ─────────────────────────────────────────
 
-const ENGINE_KEY = 'engine';
-
-export function getEngineId(): EngineId {
-  const v = getSetting(ENGINE_KEY);
-  return v && isEngineId(v) ? v : 'claude';
-}
-
-export function setEngineId(id: EngineId): void {
-  setSetting(ENGINE_KEY, id);
-}
-
-// ── Auth config (per-engine, persisted) ─────────────────────────────
-
-/** Env var each CLI reads its API key from when using API-key auth. */
-export const API_KEY_ENV: Record<EngineId, string> = {
-  claude: 'ANTHROPIC_API_KEY',
-  codex: 'OPENAI_API_KEY',
-};
+/** Env var the CLI reads its API key from when using API-key auth. */
+export const API_KEY_ENV = 'ANTHROPIC_API_KEY';
 
 export function isAuthMethod(v: string): v is AuthMethod {
   return v === 'subscription' || v === 'apikey';
 }
 
-const authMethodKey = (id: EngineId) => `auth_method_${id}`;
-const apiKeyKey = (id: EngineId) => `api_key_${id}`;
-const oauthTokenKey = (id: EngineId) => `oauth_token_${id}`;
+// Settings keys keep their historical `_claude` suffix (harmless, and keeps
+// any copied-over DB working).
+const AUTH_METHOD_KEY = 'auth_method_claude';
+const API_KEY_KEY = 'api_key_claude';
+const OAUTH_TOKEN_KEY = 'oauth_token_claude';
+const AUTH_PROBE_KEY = 'auth_probe_claude';
 
-export function getAuthMethod(id: EngineId): AuthMethod {
-  const v = getSetting(authMethodKey(id));
+export function getAuthMethod(): AuthMethod {
+  const v = getSetting(AUTH_METHOD_KEY);
   return v && isAuthMethod(v) ? v : 'subscription';
 }
 
-export function setAuthMethod(id: EngineId, method: AuthMethod): void {
-  setSetting(authMethodKey(id), method);
+export function setAuthMethod(method: AuthMethod): void {
+  setSetting(AUTH_METHOD_KEY, method);
 }
 
-export function getApiKey(id: EngineId): string | null {
-  return getSetting(apiKeyKey(id));
+export function getApiKey(): string | null {
+  return getSetting(API_KEY_KEY);
 }
 
-/** Save (or, with an empty string, clear) the API key for an engine. */
-export function setApiKey(id: EngineId, key: string): void {
+/** Save (or, with an empty string, clear) the API key. */
+export function setApiKey(key: string): void {
   const k = key.trim();
-  if (k) setSetting(apiKeyKey(id), k);
-  else deleteSetting(apiKeyKey(id));
+  if (k) setSetting(API_KEY_KEY, k);
+  else deleteSetting(API_KEY_KEY);
 }
 
 /**
@@ -157,20 +130,20 @@ export function setApiKey(id: EngineId, key: string): void {
  * onboarding stored one here). New sign-ins use `claude auth login`, which
  * writes credentials to the host itself and clears this. While a token is
  * still present (installs that haven't re-signed-in), it's injected as
- * CLAUDE_CODE_OAUTH_TOKEN so they keep working. Only Claude uses it.
+ * CLAUDE_CODE_OAUTH_TOKEN so they keep working.
  */
-export function getOauthToken(id: EngineId): string | null {
-  return getSetting(oauthTokenKey(id));
+export function getOauthToken(): string | null {
+  return getSetting(OAUTH_TOKEN_KEY);
 }
 
-export function setOauthToken(id: EngineId, token: string): void {
+export function setOauthToken(token: string): void {
   const t = token.trim();
-  if (t) setSetting(oauthTokenKey(id), t);
-  else deleteSetting(oauthTokenKey(id));
+  if (t) setSetting(OAUTH_TOKEN_KEY, t);
+  else deleteSetting(OAUTH_TOKEN_KEY);
 }
 
-export function getAuthConfig(id: EngineId): AuthConfig {
-  return { method: getAuthMethod(id), hasKey: Boolean(getApiKey(id)) };
+export function getAuthConfig(): AuthConfig {
+  return { method: getAuthMethod(), hasKey: Boolean(getApiKey()) };
 }
 
 // ── Cached auth probe ───────────────────────────────────────────────
@@ -186,10 +159,8 @@ export type AuthProbeRecord = {
   checked_at: number;
 };
 
-const authProbeKey = (id: EngineId) => `auth_probe_${id}`;
-
-export function getLastAuthProbe(id: EngineId): AuthProbeRecord | null {
-  const raw = getSetting(authProbeKey(id));
+export function getLastAuthProbe(): AuthProbeRecord | null {
+  const raw = getSetting(AUTH_PROBE_KEY);
   if (!raw) return null;
   try {
     return JSON.parse(raw) as AuthProbeRecord;
@@ -198,37 +169,76 @@ export function getLastAuthProbe(id: EngineId): AuthProbeRecord | null {
   }
 }
 
-export function saveAuthProbe(id: EngineId, probe: EngineAuth): AuthProbeRecord {
+export function saveAuthProbe(probe: EngineAuth): AuthProbeRecord {
   const rec: AuthProbeRecord = {
     authed: probe.authed,
     method: probe.method,
     ...(probe.error ? { error: probe.error } : {}),
     checked_at: Date.now(),
   };
-  setSetting(authProbeKey(id), JSON.stringify(rec));
+  setSetting(AUTH_PROBE_KEY, JSON.stringify(rec));
   return rec;
 }
 
-export function clearAuthProbe(id: EngineId): void {
-  deleteSetting(authProbeKey(id));
+export function clearAuthProbe(): void {
+  deleteSetting(AUTH_PROBE_KEY);
 }
 
 /**
  * Env overrides to apply when spawning the CLI:
- *  - API-key auth: inject the saved key under the var the CLI reads.
+ *  - API-key auth: inject the saved key under ANTHROPIC_API_KEY.
  *  - Subscription auth: nothing — the CLI uses the host's own login — unless a
- *    legacy setup-token is still stored (Claude), in which case inject it.
+ *    legacy setup-token is still stored, in which case inject it.
  */
-export function authEnv(id: EngineId): Record<string, string> {
-  if (getAuthMethod(id) === 'apikey') {
-    const key = getApiKey(id);
-    return key ? { [API_KEY_ENV[id]]: key } : {};
+export function authEnv(): Record<string, string> {
+  if (getAuthMethod() === 'apikey') {
+    const key = getApiKey();
+    return key ? { [API_KEY_ENV]: key } : {};
   }
-  if (id === 'claude') {
-    const token = getOauthToken('claude');
-    if (token) return { CLAUDE_CODE_OAUTH_TOKEN: token };
-  }
+  const token = getOauthToken();
+  if (token) return { CLAUDE_CODE_OAUTH_TOKEN: token };
   return {};
+}
+
+// ── Model & effort selection ────────────────────────────────────────
+//
+// Global settings passed to `claude -p` as --model / --effort. Empty/absent
+// means "let the CLI use its own default". Changing them does NOT reset
+// sessions — the next turn just runs with the new flags.
+
+const MODEL_KEY = 'claude_model';
+const EFFORT_KEY = 'claude_effort';
+
+/** Common aliases offered in the dashboard; any full model id is also valid. */
+export const MODEL_ALIASES = ['fable', 'opus', 'sonnet', 'haiku'] as const;
+
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+export function isEffortLevel(v: string): v is EffortLevel {
+  return (EFFORT_LEVELS as readonly string[]).includes(v);
+}
+
+export function getModel(): string | null {
+  const v = getSetting(MODEL_KEY);
+  return v && v.trim() ? v.trim() : null;
+}
+
+export function setModel(model: string): void {
+  const m = model.trim();
+  if (m) setSetting(MODEL_KEY, m);
+  else deleteSetting(MODEL_KEY);
+}
+
+export function getEffort(): EffortLevel | null {
+  const v = getSetting(EFFORT_KEY);
+  return v && isEffortLevel(v) ? v : null;
+}
+
+export function setEffort(effort: string): void {
+  const e = effort.trim();
+  if (e && isEffortLevel(e)) setSetting(EFFORT_KEY, e);
+  else deleteSetting(EFFORT_KEY);
 }
 
 /** Current HH:MM:SS, for steps whose source events carry no timestamp. */

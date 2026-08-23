@@ -13,10 +13,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export type BotInfo = { id: number; username: string; first_name: string };
-
-export type EngineId = 'claude' | 'codex';
-export type EngineInfo = { id: EngineId; label: string };
+export type BotInfo = { id: string; username: string };
 
 export type AuthMethod = 'subscription' | 'apikey';
 export type AuthProbe = {
@@ -40,42 +37,43 @@ export type PersonaInfo = {
   default_persona: string;
 };
 
-export type GroupCaptureMode = 'topic' | 'group';
+export type ChannelMode = 'free' | 'mention' | 'ignore';
 
-export type GroupLink = {
-  id: number;
-  chat_id: string;
-  topic_id: string | null; // null = the whole group
-  chat_title: string | null;
-  topic_name: string | null;
+export type AllowedUser = { user_id: string; username: string | null; added_at: number };
+
+export type ChannelModeRow = {
+  channel_id: string;
+  mode: ChannelMode;
+  channel_name: string | null;
+  guild_name: string | null;
+  updated_at: number;
 };
+
+export type GuildInfo = { id: string; name: string };
+
+export type ChannelListing = {
+  default_mode: ChannelMode;
+  guilds: GuildInfo[];
+  channels: Array<{ id: string; name: string; guild_id: string; guild_name: string }>;
+  overrides: ChannelModeRow[];
+  error?: string;
+};
+
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type Status = {
   onboarded: boolean;
   bot_token_set: boolean;
-  chat_id: string | null;
   bot: BotInfo | null;
+  invite_url: string | null;
+  owner_id: string | null;
+  owner_username: string | null;
   relay_enabled: boolean;
-  groups: GroupLink[];
-  engine: EngineId;
-  engines: EngineInfo[];
+  default_mode: ChannelMode;
+  model: string | null;
+  effort: EffortLevel | null;
   auth: AuthConfig;
 };
-
-export type QrPairing = {
-  pairing_id: string;
-  suggested_username: string;
-  deep_link: string;
-  qr_payload: string;
-  expires_at: string;
-};
-
-export type QrPollResult =
-  | { status: 'waiting'; expires_at: string }
-  | { status: 'ready'; bot: BotInfo; chat_id: string | null }
-  | { status: 'expired' }
-  | { status: 'claimed' }
-  | { status: 'error'; error: string };
 
 export type CommitInfo = { sha: string; subject: string; date?: string };
 
@@ -121,6 +119,7 @@ export type Job = {
   description: string;
   schedule: string; // 5-field cron expression, UTC
   script_path: string;
+  channel_id: string | null; // Discord delivery channel
   enabled: number;
   created_at: number;
   updated_at: number;
@@ -166,19 +165,13 @@ export type FeedEvent =
 
 export const api = {
   status: () => request<Status>('/status'),
-  agentCheck: (engine: EngineId) =>
-    request<AgentCheck>(`/agent-check?engine=${engine}`),
-  authCheck: (engine: EngineId) =>
-    request<EngineAuth>(`/auth-check?engine=${engine}`),
-  authConfig: (engine: EngineId) =>
-    request<AuthConfig>(`/auth-config?engine=${engine}`),
-  setAuthConfig: (
-    engine: EngineId,
-    body: { method?: AuthMethod; apiKey?: string }
-  ) =>
+  agentCheck: () => request<AgentCheck>('/agent-check'),
+  authCheck: () => request<EngineAuth>('/auth-check'),
+  authConfig: () => request<AuthConfig>('/auth-config'),
+  setAuthConfig: (body: { method?: AuthMethod; apiKey?: string }) =>
     request<{ ok: true } & AuthConfig>('/auth-config', {
       method: 'POST',
-      body: JSON.stringify({ engine, ...body }),
+      body: JSON.stringify(body),
     }),
   claudeLoginStart: () =>
     request<{ url: string }>('/auth/claude-login/start', { method: 'POST' }),
@@ -193,19 +186,6 @@ export const api = {
     ),
   claudeLoginCancel: () =>
     request<{ ok: true }>('/auth/claude-login/cancel', { method: 'POST' }),
-  codexLoginStart: () =>
-    request<{ url: string; code: string }>('/auth/codex-login/start', { method: 'POST' }),
-  codexLoginState: () =>
-    request<{ state: 'idle' | 'awaiting' | 'done' | 'error'; error?: string }>(
-      '/auth/codex-login/status'
-    ),
-  codexLoginCancel: () =>
-    request<{ ok: true }>('/auth/codex-login/cancel', { method: 'POST' }),
-  setEngine: (engine: EngineId) =>
-    request<{ ok: true; engine: EngineId }>('/engine', {
-      method: 'POST',
-      body: JSON.stringify({ engine }),
-    }),
   persona: () => request<PersonaInfo>('/persona'),
   setPersona: (persona: string) =>
     request<{ ok: true; persona: string; custom: boolean }>('/persona', {
@@ -213,34 +193,51 @@ export const api = {
       body: JSON.stringify({ persona }),
     }),
   saveToken: (token: string) =>
-    request<{ ok: true; bot: BotInfo }>('/onboarding/save-token', {
+    request<{ ok: true; bot: BotInfo; invite_url: string | null }>('/onboarding/save-token', {
       method: 'POST',
       body: JSON.stringify({ token }),
     }),
-  qrStart: () => request<QrPairing>('/onboarding/qr/start', { method: 'POST' }),
-  qrPoll: (id: string) => request<QrPollResult>(`/onboarding/qr/${id}`),
-  qrCancel: (id: string) =>
-    request<{ ok: true }>(`/onboarding/qr/${id}/cancel`, { method: 'POST' }),
   startCapture: () =>
     request<{ ok: true }>('/onboarding/start-capture', { method: 'POST' }),
   cancelCapture: () =>
     request<{ ok: true }>('/onboarding/cancel-capture', { method: 'POST' }),
-  captured: () => request<{ chat_id: string | null }>('/onboarding/captured'),
-  groupStartCapture: (mode: GroupCaptureMode) =>
-    request<{ ok: true; mode: GroupCaptureMode }>('/group/start-capture', {
+  captured: () =>
+    request<{ user_id: string | null; username: string | null }>('/onboarding/captured'),
+  allowedUsers: () =>
+    request<{ users: AllowedUser[]; owner_id: string | null }>('/allowed-users'),
+  addAllowedUser: (user_id: string, username?: string) =>
+    request<{ ok: true; users: AllowedUser[] }>('/allowed-users', {
+      method: 'POST',
+      body: JSON.stringify({ user_id, username }),
+    }),
+  removeAllowedUser: (user_id: string) =>
+    request<{ ok: true; users: AllowedUser[] }>(`/allowed-users/${user_id}`, {
+      method: 'DELETE',
+    }),
+  channels: () => request<ChannelListing>('/channels'),
+  setChannelMode: (body: {
+    channel_id: string;
+    mode: ChannelMode | 'default';
+    channel_name?: string;
+    guild_name?: string;
+  }) =>
+    request<{ ok: true }>('/channel-mode', { method: 'POST', body: JSON.stringify(body) }),
+  setDefaultMode: (mode: ChannelMode) =>
+    request<{ ok: true; default_mode: ChannelMode }>('/default-mode', {
       method: 'POST',
       body: JSON.stringify({ mode }),
     }),
-  groupCancelCapture: () =>
-    request<{ ok: true }>('/group/cancel-capture', { method: 'POST' }),
-  groupStatus: () =>
-    request<{ capturing: boolean; mode: GroupCaptureMode | null; groups: GroupLink[] }>(
-      '/group/status'
-    ),
-  groupUnlink: (id: number) =>
-    request<{ ok: true }>('/group/unlink', {
+  modelConfig: () =>
+    request<{
+      model: string | null;
+      effort: EffortLevel | null;
+      model_aliases: string[];
+      effort_levels: EffortLevel[];
+    }>('/model'),
+  setModelConfig: (body: { model?: string; effort?: string }) =>
+    request<{ ok: true; model: string | null; effort: EffortLevel | null }>('/model', {
       method: 'POST',
-      body: JSON.stringify({ id }),
+      body: JSON.stringify(body),
     }),
   setRelay: (enabled: boolean) =>
     request<{ ok: true; enabled: boolean }>('/relay', {

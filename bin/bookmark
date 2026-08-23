@@ -15,7 +15,7 @@
 #   --remove <x>    delete by id or by exact URL
 #
 # Env: RELAY_DB overrides the DB path; RELAY_PORT pins the API port
-# (otherwise $PORT, 8000, 3000 are probed).
+# (otherwise $PORT, 8100, 8101 are probed).
 
 set -uo pipefail
 
@@ -42,7 +42,7 @@ api_base() {
   local candidates=()
   [ -n "${RELAY_PORT:-}" ] && candidates+=("$RELAY_PORT")
   [ -n "${PORT:-}" ] && candidates+=("$PORT")
-  candidates+=(8000 3000)
+  candidates+=(8100 8101)
   local seen="" port
   for port in "${candidates[@]}"; do
     case " $seen " in *" $port "*) continue ;; esac

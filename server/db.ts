@@ -49,16 +49,30 @@ db.run(`
 
 db.run('CREATE INDEX IF NOT EXISTS idx_step_log_created_at ON step_log(created_at DESC)');
 
-// Linked group chats/topics the relay answers in (besides the private chat).
-// topic_id NULL = the whole group; otherwise one forum topic.
+// Discord users allowed to talk to the bot. The user who completes onboarding
+// becomes the first row (the owner — the row matching the `discord_owner_id`
+// setting). Messages from anyone else are ignored.
 db.run(`
-  CREATE TABLE IF NOT EXISTS group_links (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id TEXT NOT NULL,
-    topic_id TEXT,
-    chat_title TEXT,
-    topic_name TEXT,
-    created_at INTEGER NOT NULL
+  CREATE TABLE IF NOT EXISTS allowed_users (
+    user_id TEXT PRIMARY KEY,
+    username TEXT,
+    added_at INTEGER NOT NULL
+  )
+`);
+
+// Per-channel response mode overrides. Channels with no row use the global
+// default (`default_channel_mode` setting, 'free' out of the box).
+//  - 'free':    reply inline without requiring a mention; a trailing /t
+//               spawns a thread instead.
+//  - 'mention': only respond when @mentioned, and auto-thread the reply.
+//  - 'ignore':  never respond in this channel.
+db.run(`
+  CREATE TABLE IF NOT EXISTS channel_modes (
+    channel_id TEXT PRIMARY KEY,
+    mode TEXT NOT NULL,
+    channel_name TEXT,
+    guild_name TEXT,
+    updated_at INTEGER NOT NULL
   )
 `);
 
@@ -78,9 +92,10 @@ db.run(`
 
 // Scheduled jobs: watcher scripts the agent writes (usually under
 // data/jobs/<name>/) that the in-process scheduler (server/jobs.ts) runs on a
-// cron schedule. A run's non-empty stdout is sent to the linked Telegram chat;
-// empty stdout means "nothing to report". `schedule` is a 5-field cron
-// expression interpreted in UTC (Bun.cron semantics).
+// cron schedule. A run's non-empty stdout is sent to the job's Discord
+// delivery channel (`channel_id` — required; a DM channel id is fine); empty
+// stdout means "nothing to report". `schedule` is a 5-field cron expression
+// interpreted in UTC (Bun.cron semantics).
 db.run(`
   CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,6 +103,7 @@ db.run(`
     description TEXT NOT NULL DEFAULT '',
     schedule TEXT NOT NULL,
     script_path TEXT NOT NULL,
+    channel_id TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -97,6 +113,12 @@ db.run(`
     consecutive_failures INTEGER NOT NULL DEFAULT 0
   )
 `);
+// Older copied-over DBs may predate the column.
+try {
+  db.run('ALTER TABLE jobs ADD COLUMN channel_id TEXT');
+} catch {
+  // already present
+}
 
 export function getSetting(key: string): string | null {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
@@ -164,12 +186,88 @@ export function deleteBookmark(id: number): boolean {
   return db.prepare('DELETE FROM bookmarks WHERE id = ?').run(id).changes > 0;
 }
 
+// ── Allowed users ───────────────────────────────────────────────────
+
+export type AllowedUser = { user_id: string; username: string | null; added_at: number };
+
+export function listAllowedUsers(): AllowedUser[] {
+  return db
+    .prepare('SELECT * FROM allowed_users ORDER BY added_at ASC')
+    .all() as AllowedUser[];
+}
+
+export function isAllowedUser(userId: string): boolean {
+  return Boolean(db.prepare('SELECT 1 FROM allowed_users WHERE user_id = ?').get(userId));
+}
+
+/** Add (or refresh the username of) an allowed user. */
+export function addAllowedUser(userId: string, username: string | null): void {
+  db.prepare(
+    `INSERT INTO allowed_users (user_id, username, added_at) VALUES (?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET username = COALESCE(excluded.username, username)`
+  ).run(userId, username, Date.now());
+}
+
+export function removeAllowedUser(userId: string): boolean {
+  return db.prepare('DELETE FROM allowed_users WHERE user_id = ?').run(userId).changes > 0;
+}
+
+// ── Channel modes ───────────────────────────────────────────────────
+
+export type ChannelMode = 'free' | 'mention' | 'ignore';
+
+export function isChannelMode(v: string): v is ChannelMode {
+  return v === 'free' || v === 'mention' || v === 'ignore';
+}
+
+export type ChannelModeRow = {
+  channel_id: string;
+  mode: ChannelMode;
+  channel_name: string | null;
+  guild_name: string | null;
+  updated_at: number;
+};
+
+export function listChannelModes(): ChannelModeRow[] {
+  return db
+    .prepare('SELECT * FROM channel_modes ORDER BY updated_at ASC')
+    .all() as ChannelModeRow[];
+}
+
+export function getChannelModeOverride(channelId: string): ChannelMode | null {
+  const row = db
+    .prepare('SELECT mode FROM channel_modes WHERE channel_id = ?')
+    .get(channelId) as { mode: ChannelMode } | undefined;
+  return row?.mode ?? null;
+}
+
+export function setChannelMode(
+  channelId: string,
+  mode: ChannelMode,
+  names: { channel_name?: string | null; guild_name?: string | null } = {}
+): void {
+  db.prepare(
+    `INSERT INTO channel_modes (channel_id, mode, channel_name, guild_name, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(channel_id) DO UPDATE SET
+       mode = excluded.mode,
+       channel_name = COALESCE(excluded.channel_name, channel_name),
+       guild_name = COALESCE(excluded.guild_name, guild_name),
+       updated_at = excluded.updated_at`
+  ).run(channelId, mode, names.channel_name ?? null, names.guild_name ?? null, Date.now());
+}
+
+export function clearChannelMode(channelId: string): boolean {
+  return db.prepare('DELETE FROM channel_modes WHERE channel_id = ?').run(channelId).changes > 0;
+}
+
 export type Job = {
   id: number;
   name: string;
   description: string;
   schedule: string;
   script_path: string;
+  channel_id: string | null;
   enabled: number;
   created_at: number;
   updated_at: number;
@@ -196,29 +294,37 @@ export function addJob(entry: {
   description: string;
   schedule: string;
   script_path: string;
+  channel_id: string;
 }): Job {
   const now = Date.now();
   const r = db
     .prepare(
-      `INSERT INTO jobs (name, description, schedule, script_path, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 1, ?, ?)`
+      `INSERT INTO jobs (name, description, schedule, script_path, channel_id, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`
     )
-    .run(entry.name, entry.description, entry.schedule, entry.script_path, now, now);
+    .run(entry.name, entry.description, entry.schedule, entry.script_path, entry.channel_id, now, now);
   return getJob(Number(r.lastInsertRowid))!;
 }
 
 export function updateJob(
   id: number,
-  patch: { description?: string; schedule?: string; script_path?: string; enabled?: boolean }
+  patch: {
+    description?: string;
+    schedule?: string;
+    script_path?: string;
+    channel_id?: string;
+    enabled?: boolean;
+  }
 ): Job | null {
   const existing = getJob(id);
   if (!existing) return null;
   db.prepare(
-    'UPDATE jobs SET description = ?, schedule = ?, script_path = ?, enabled = ?, updated_at = ? WHERE id = ?'
+    'UPDATE jobs SET description = ?, schedule = ?, script_path = ?, channel_id = ?, enabled = ?, updated_at = ? WHERE id = ?'
   ).run(
     patch.description ?? existing.description,
     patch.schedule ?? existing.schedule,
     patch.script_path ?? existing.script_path,
+    patch.channel_id ?? existing.channel_id,
     patch.enabled === undefined ? existing.enabled : patch.enabled ? 1 : 0,
     Date.now(),
     id

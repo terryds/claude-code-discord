@@ -6,7 +6,14 @@ import type {
   EngineResult,
   OnStep,
 } from './engine.ts';
-import { ENGINE_LABELS, authEnv, getApiKey, getAuthMethod } from './engine.ts';
+import {
+  ENGINE_LABEL,
+  authEnv,
+  getApiKey,
+  getAuthMethod,
+  getEffort,
+  getModel,
+} from './engine.ts';
 import { watchSession } from './claude-stream.ts';
 
 // Kept as aliases for back-compat with existing imports across the server.
@@ -42,6 +49,10 @@ export async function runClaudeHeadless(
     'json',
   ];
   if (sessionId) args.push('--resume', sessionId);
+  const model = getModel();
+  if (model) args.push('--model', model);
+  const effort = getEffort();
+  if (effort) args.push('--effort', effort);
 
   let proc;
   try {
@@ -50,7 +61,7 @@ export async function runClaudeHeadless(
       stderr: 'pipe',
       // Inject the saved API key when configured for API-key auth; otherwise
       // inherit the host env unchanged (subscription login lives in ~/.claude).
-      env: { ...process.env, ...authEnv('claude') },
+      env: { ...process.env, ...authEnv() },
     });
   } catch (err) {
     return {
@@ -214,7 +225,7 @@ export async function claudeAuthStatus(): Promise<ClaudeAuthStatus | null> {
     const proc = Bun.spawn(['claude', 'auth', 'status', '--json'], {
       stdout: 'pipe',
       stderr: 'pipe',
-      env: { ...process.env, ...authEnv('claude') },
+      env: { ...process.env, ...authEnv() },
     });
     const [out] = await Promise.all([
       new Response(proc.stdout).text(),
@@ -232,8 +243,8 @@ export async function claudeAuthStatus(): Promise<ClaudeAuthStatus | null> {
 }
 
 export async function checkClaudeAuth(): Promise<EngineAuth> {
-  const method = getAuthMethod('claude');
-  const hasKey = Boolean(getApiKey('claude'));
+  const method = getAuthMethod();
+  const hasKey = Boolean(getApiKey());
   if (method === 'apikey' && !hasKey) {
     return { authed: false, method, hasKey, error: 'No API key saved yet.' };
   }
@@ -308,7 +319,7 @@ export async function checkClaudeInstalled(): Promise<ClaudeCheck> {
  */
 export const claudeEngine: Engine = {
   id: 'claude',
-  label: ENGINE_LABELS.claude,
+  label: ENGINE_LABEL,
   check: checkClaudeInstalled,
   checkAuth: checkClaudeAuth,
   async run(prompt, sessionId, signal, onStep: OnStep): Promise<EngineResult> {

@@ -2,12 +2,13 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useLocation } from 'wouter';
 import {
   api,
+  type AllowedUser,
   type Bookmark,
+  type ChannelListing,
+  type ChannelMode,
   type CommitInfo,
-  type EngineId,
+  type EffortLevel,
   type FeedEvent,
-  type GroupCaptureMode,
-  type GroupLink,
   type Job,
   type Status,
   type UpdateInfo,
@@ -16,15 +17,14 @@ import { AgentAuth } from '../components/AgentAuth';
 
 type Props = { status: Status; onChange: () => void };
 
+const engineLabel = 'Claude Code';
+
 export function Dashboard({ status, onChange }: Props) {
   const [, setLocation] = useLocation();
   const [events, setEvents] = useState<FeedEvent[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
-
-  const engineLabel =
-    status.engines.find((e) => e.id === status.engine)?.label ?? status.engine;
 
   const loadFeed = async () => {
     try {
@@ -63,20 +63,6 @@ export function Dashboard({ status, onChange }: Props) {
     }
   };
 
-  const switchEngine = async (id: EngineId) => {
-    if (id === status.engine) return;
-    setBusy('engine');
-    setError(null);
-    try {
-      await api.setEngine(id);
-      onChange();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const resetSession = async () => {
     setBusy('session');
     setError(null);
@@ -90,7 +76,7 @@ export function Dashboard({ status, onChange }: Props) {
   };
 
   const resetAll = async () => {
-    if (!confirm('Reset bot token, chat link, and session? You will need to re-onboard.')) {
+    if (!confirm('Reset bot token, owner link, and sessions? You will need to re-onboard.')) {
       return;
     }
     setBusy('reset');
@@ -114,16 +100,14 @@ export function Dashboard({ status, onChange }: Props) {
           <p className="text-zinc-400 text-sm mt-1">
             {status.bot ? (
               <>
-                Connected to{' '}
-                <a
-                  className="underline hover:text-zinc-200"
-                  href={`https://t.me/${status.bot.username}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  @{status.bot.username}
-                </a>{' '}
-                · chat <code className="text-zinc-300">{status.chat_id}</code>
+                Connected as{' '}
+                <span className="font-mono text-zinc-200">@{status.bot.username}</span>
+                {status.owner_username && (
+                  <>
+                    {' '}· owner{' '}
+                    <span className="font-mono text-zinc-300">@{status.owner_username}</span>
+                  </>
+                )}
               </>
             ) : (
               'No bot connected'
@@ -131,38 +115,20 @@ export function Dashboard({ status, onChange }: Props) {
           </p>
           {status.bot && (
             <a
-              href={`https://t.me/${status.bot.username}`}
+              href="https://discord.com/channels/@me"
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-2 mt-3 px-4 py-2 rounded-lg text-sm font-medium text-white bg-[#229ED9] hover:bg-[#1c8ec4] transition-colors"
+              className="inline-flex items-center gap-2 mt-3 px-4 py-2 rounded-lg text-sm font-medium text-white bg-[#5865F2] hover:bg-[#4752c4] transition-colors"
             >
-              {/* Telegram paper-plane mark */}
-              <svg viewBox="0 0 448 512" className="w-4 h-4 fill-current" aria-hidden="true">
-                <path d="M446.7 98.6l-67.6 318.8c-5.1 22.5-18.4 28.1-37.3 17.5l-103-75.9-49.7 47.8c-5.5 5.5-10.1 10.1-20.7 10.1l7.4-104.9 190.9-172.5c8.3-7.4-1.8-11.5-12.9-4.1L117.8 284 16.2 252.2c-22.1-6.9-22.5-22.1 4.6-32.7L418.2 66.4c18.4-6.9 34.5 4.1 28.5 32.2z" />
+              {/* Discord mark */}
+              <svg viewBox="0 0 640 512" className="w-4 h-4 fill-current" aria-hidden="true">
+                <path d="M524.5 69.8a1.5 1.5 0 0 0-.8-.7A485.1 485.1 0 0 0 404.1 32a1.8 1.8 0 0 0-1.9.9 337.5 337.5 0 0 0-14.9 30.6 447.8 447.8 0 0 0-134.4 0 309.5 309.5 0 0 0-15.1-30.6 1.9 1.9 0 0 0-1.9-.9A483.7 483.7 0 0 0 116.1 69.1a1.7 1.7 0 0 0-.8.7C39.1 183.7 18.2 294.7 28.4 404.4a2 2 0 0 0 .8 1.4A487.7 487.7 0 0 0 176 479.9a1.9 1.9 0 0 0 2.1-.7A348.2 348.2 0 0 0 208.1 430.4a1.9 1.9 0 0 0-1-2.6 321.2 321.2 0 0 1-45.9-21.9 1.9 1.9 0 0 1-.2-3.1c3.1-2.3 6.2-4.7 9.1-7.1a1.8 1.8 0 0 1 1.9-.3c96.3 44 200.6 44 295.8 0a1.8 1.8 0 0 1 1.9.2c2.9 2.4 6 4.9 9.1 7.2a1.9 1.9 0 0 1-.2 3.1 301.4 301.4 0 0 1-45.9 21.8 1.9 1.9 0 0 0-1 2.6 391.1 391.1 0 0 0 30 48.8 1.9 1.9 0 0 0 2.1.7A486 486 0 0 0 610.7 405.7a1.9 1.9 0 0 0 .8-1.4c12.2-126.7-20.6-236.8-87-334.5zM222.5 337.6c-29 0-52.8-26.6-52.8-59.2s23.4-59.3 52.8-59.3c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.4 59.3-52.8 59.3zm195.4 0c-29 0-52.8-26.6-52.8-59.2s23.4-59.3 52.8-59.3c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.1 59.3-52.8 59.3z" />
               </svg>
-              Chat with me
+              Open Discord
             </a>
           )}
         </div>
         <div className="flex items-center gap-3">
-          <div className="inline-flex rounded-full border border-zinc-700 overflow-hidden text-xs font-medium">
-            {status.engines.map((e) => (
-              <button
-                key={e.id}
-                onClick={() => switchEngine(e.id)}
-                disabled={busy === 'engine'}
-                className={[
-                  'px-3 py-1 transition-colors disabled:opacity-50',
-                  status.engine === e.id
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800',
-                ].join(' ')}
-                title="Switch coding agent — starts a fresh conversation"
-              >
-                {e.label}
-              </button>
-            ))}
-          </div>
           <span
             className={[
               'inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium',
@@ -228,9 +194,9 @@ export function Dashboard({ status, onChange }: Props) {
           disabled={busy === 'session'}
           className="p-4 rounded-lg border border-zinc-700 bg-zinc-900 hover:bg-zinc-800 text-left transition-colors disabled:opacity-50"
         >
-          <div className="font-medium text-sm">Reset {engineLabel} session</div>
+          <div className="font-medium text-sm">Reset {engineLabel} sessions</div>
           <div className="text-xs text-zinc-400 mt-1">
-            Clears every conversation (private chat and group topic alike).
+            Clears every conversation (DMs, channels, and threads alike).
           </div>
         </button>
 
@@ -241,9 +207,30 @@ export function Dashboard({ status, onChange }: Props) {
         >
           <div className="font-medium text-sm text-red-200">Reset everything</div>
           <div className="text-xs text-red-300/70 mt-1">
-            Clear bot token, chat link, and session.
+            Clear bot token, owner link, and sessions.
           </div>
         </button>
+      </section>
+
+      <section>
+        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
+          Channels & response modes
+        </h2>
+        <ChannelsCard defaultMode={status.default_mode} onChange={onChange} />
+      </section>
+
+      <section>
+        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
+          Allowed users
+        </h2>
+        <AllowedUsersCard />
+      </section>
+
+      <section>
+        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
+          Model
+        </h2>
+        <ModelCard />
       </section>
 
       <section>
@@ -255,23 +242,12 @@ export function Dashboard({ status, onChange }: Props) {
 
       <section>
         <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
-          Group topics
-        </h2>
-        <GroupTopicCard
-          groups={status.groups}
-          botUsername={status.bot?.username ?? null}
-          onChange={onChange}
-        />
-      </section>
-
-      <section>
-        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
           {engineLabel} authentication
         </h2>
         <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5">
-          {/* Re-mount when the active engine changes so config reloads. Skip the
-              auto-probe here — probing costs a request; the user clicks Check. */}
-          <AgentAuth key={status.engine} engine={status.engine} autoProbe={false} />
+          {/* Skip the auto-probe here — probing costs a request; the user
+              clicks Check. */}
+          <AgentAuth autoProbe={false} />
         </div>
       </section>
 
@@ -337,7 +313,7 @@ function PersonaCard() {
       setText(r.persona);
       setSaved(r.persona);
       setCustom(r.custom);
-      setNotice('Saved — the next Telegram message starts a fresh conversation with it.');
+      setNotice('Saved — the next Discord message starts a fresh conversation with it.');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -357,7 +333,7 @@ function PersonaCard() {
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 space-y-3 text-sm">
       <div className="flex items-center justify-between gap-3">
         <p className="text-zinc-400 text-xs">
-          Who the assistant is to you on Telegram. Injected at the start of every
+          Who the assistant is to you on Discord. Injected at the start of every
           conversation — also editable via <code className="text-zinc-300">/persona</code> in chat.
         </p>
         <span
@@ -437,7 +413,7 @@ function JobsCard() {
 
   useEffect(() => {
     load();
-    // The agent registers jobs from Telegram runs, and run states change on
+    // The agent registers jobs from Discord runs, and run states change on
     // their own — keep the list fresh.
     const id = window.setInterval(load, 5000);
     return () => window.clearInterval(id);
@@ -476,7 +452,7 @@ function JobsCard() {
       {error && <p className="text-red-300 text-sm">{error}</p>}
       {loaded && jobs.length === 0 && (
         <p className="text-zinc-500 text-sm">
-          No scheduled jobs yet. Ask the agent over Telegram to watch something —
+          No scheduled jobs yet. Ask the agent over Discord to watch something —
           e.g. “check the bitcoin price every hour and tell me if it drops below
           $50k” — and it will create one.
         </p>
@@ -524,7 +500,7 @@ function JobsCard() {
                 onClick={() => withBusy(j.id, () => api.runJob(j.id))}
                 disabled={busyId === j.id || j.running}
                 className="px-2 py-1 rounded text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors disabled:opacity-50"
-                title="Run once now (delivers output to Telegram)"
+                title="Run once now (delivers output to Discord)"
               >
                 Run now
               </button>
@@ -585,7 +561,7 @@ function BookmarksCard() {
 
   useEffect(() => {
     load();
-    // The agent adds bookmarks from Telegram runs — pick those up while the
+    // The agent adds bookmarks from Discord runs — pick those up while the
     // dashboard sits open, without hammering the API.
     const id = window.setInterval(load, 15000);
     return () => window.clearInterval(id);
@@ -1013,28 +989,195 @@ function UpdateCard() {
   );
 }
 
-function GroupTopicCard({
-  groups,
-  botUsername,
+const MODE_LABELS: Record<ChannelMode, string> = {
+  free: 'Free responses',
+  mention: 'Mention → thread',
+  ignore: 'Ignored',
+};
+
+const MODE_HELP: Record<ChannelMode, string> = {
+  free: 'The bot replies to every allowed user without a mention. End a message with " /t" to branch into a thread with a fresh session.',
+  mention: 'The bot only responds when @mentioned, and replies in a new thread with a fresh session.',
+  ignore: 'The bot never responds in the channel.',
+};
+
+function ChannelsCard({
+  defaultMode,
   onChange,
 }: {
-  groups: GroupLink[];
-  botUsername: string | null;
+  defaultMode: ChannelMode;
   onChange: () => void;
 }) {
-  const [capturing, setCapturing] = useState(false);
-  const [mode, setMode] = useState<GroupCaptureMode>('topic');
-  const [busy, setBusy] = useState(false);
-  const [unlinking, setUnlinking] = useState<number | null>(null);
+  const [listing, setListing] = useState<ChannelListing | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const pollRef = useRef<number | null>(null);
 
-  const startCapture = async () => {
-    setError(null);
-    setBusy(true);
+  const load = async () => {
     try {
-      await api.groupStartCapture(mode);
-      setCapturing(true);
+      const r = await api.channels();
+      setListing(r);
+      if (r.error) setError(`Couldn't reach Discord: ${r.error}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const setDefault = async (mode: ChannelMode) => {
+    setBusy('default');
+    setError(null);
+    try {
+      await api.setDefaultMode(mode);
+      await load();
+      onChange();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const setMode = async (
+    ch: { id: string; name: string; guild_name: string },
+    mode: ChannelMode | 'default'
+  ) => {
+    setBusy(ch.id);
+    setError(null);
+    try {
+      await api.setChannelMode({
+        channel_id: ch.id,
+        mode,
+        channel_name: ch.name,
+        guild_name: ch.guild_name,
+      });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const overrideFor = (channelId: string): ChannelMode | null =>
+    listing?.overrides.find((o) => o.channel_id === channelId)?.mode ?? null;
+
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 text-sm space-y-4">
+      <div>
+        <div className="text-xs uppercase tracking-wide text-zinc-500 mb-1.5">
+          Default mode (channels without an override)
+        </div>
+        <div className="inline-flex rounded-lg border border-zinc-700 overflow-hidden text-sm font-medium">
+          {(['free', 'mention', 'ignore'] as ChannelMode[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setDefault(m)}
+              disabled={busy === 'default'}
+              className={[
+                'px-3 py-1.5 transition-colors disabled:opacity-50',
+                defaultMode === m
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800',
+              ].join(' ')}
+            >
+              {MODE_LABELS[m]}
+            </button>
+          ))}
+        </div>
+        <p className="text-zinc-500 text-xs mt-1.5">{MODE_HELP[defaultMode]}</p>
+      </div>
+
+      {listing === null ? (
+        <p className="text-zinc-500">Loading channels…</p>
+      ) : listing.channels.length === 0 ? (
+        <p className="text-zinc-400">
+          No channels visible yet — invite the bot to a server (and give it View
+          Channel access) and they'll show up here.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {listing.channels.map((ch) => {
+            const override = overrideFor(ch.id);
+            return (
+              <div
+                key={ch.id}
+                className="flex items-center justify-between gap-3 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="text-zinc-100 truncate">
+                    <span className="font-medium">#{ch.name}</span>{' '}
+                    <span className="text-zinc-500">· {ch.guild_name}</span>
+                  </p>
+                  <p className="text-zinc-500 text-xs">
+                    <code className="text-zinc-400">{ch.id}</code>
+                    {override === null && (
+                      <span> · using default ({MODE_LABELS[defaultMode]})</span>
+                    )}
+                  </p>
+                </div>
+                <select
+                  value={override ?? 'default'}
+                  disabled={busy === ch.id}
+                  onChange={(e) => setMode(ch, e.target.value as ChannelMode | 'default')}
+                  className="shrink-0 bg-zinc-950 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-blue-600 disabled:opacity-50"
+                >
+                  <option value="default">Default</option>
+                  <option value="free">{MODE_LABELS.free}</option>
+                  <option value="mention">{MODE_LABELS.mention}</option>
+                  <option value="ignore">{MODE_LABELS.ignore}</option>
+                </select>
+              </div>
+            );
+          })}
+          <p className="text-zinc-500 text-xs">
+            DMs always answer. Threads the bot created keep answering without a
+            mention, each with its own contained session.
+          </p>
+        </div>
+      )}
+
+      {error && <p className="text-red-400">{error}</p>}
+    </div>
+  );
+}
+
+function AllowedUsersCard() {
+  const [users, setUsers] = useState<AllowedUser[]>([]);
+  const [ownerId, setOwnerId] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [newId, setNewId] = useState('');
+  const [newName, setNewName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      const r = await api.allowedUsers();
+      setUsers(r.users);
+      setOwnerId(r.owner_id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoaded(true);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const add = async () => {
+    if (!newId.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.addAllowedUser(newId.trim(), newName.trim() || undefined);
+      setNewId('');
+      setNewName('');
+      await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1042,200 +1185,226 @@ function GroupTopicCard({
     }
   };
 
-  const cancelCapture = async () => {
-    try {
-      await api.groupCancelCapture();
-    } catch {
-      // ignore
-    }
-    setCapturing(false);
-  };
-
-  const unlink = async (id: number) => {
+  const remove = async (u: AllowedUser) => {
+    if (!confirm(`Remove ${u.username ? `@${u.username}` : u.user_id} from the allowlist?`))
+      return;
+    setBusy(true);
     setError(null);
-    setUnlinking(id);
     try {
-      await api.groupUnlink(id);
-      onChange();
+      await api.removeAllowedUser(u.user_id);
+      await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setUnlinking(null);
+      setBusy(false);
     }
   };
 
-  // While listening, poll until the server reports the capture finished.
-  useEffect(() => {
-    if (!capturing) return;
-    let stopped = false;
-    const tick = async () => {
-      try {
-        const r = await api.groupStatus();
-        if (!r.capturing) {
-          setCapturing(false);
-          onChange();
-          return;
-        }
-      } catch {
-        // keep polling
-      }
-      if (!stopped) pollRef.current = window.setTimeout(tick, 1500);
-    };
-    tick();
-    return () => {
-      stopped = true;
-      if (pollRef.current) window.clearTimeout(pollRef.current);
-    };
-  }, [capturing]);
-
-  const bot = botUsername ? `@${botUsername}` : 'your bot';
-
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 text-sm space-y-3">
-      {groups.length > 0 ? (
-        <div className="space-y-2">
-          {groups.map((g) => (
-            <div
-              key={g.id}
-              className="flex items-center justify-between gap-3 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2"
-            >
-              <div className="min-w-0">
-                <p className="text-zinc-100 truncate">
-                  <span className="font-medium">{g.chat_title ?? g.chat_id}</span>
-                  {' · '}
-                  {g.topic_id ? (
-                    <>topic {g.topic_name ? <span className="font-medium">{g.topic_name}</span> : <code>{g.topic_id}</code>}</>
-                  ) : (
-                    <span className="text-zinc-300">entire group</span>
-                  )}
-                </p>
-                <p className="text-zinc-500 text-xs">
-                  Chat ID: <code className="text-zinc-400">{g.chat_id}</code>
-                  {g.topic_id && (
-                    <>
-                      {' '}· Topic ID: <code className="text-zinc-400">{g.topic_id}</code>
-                    </>
-                  )}
-                </p>
-              </div>
+      <p className="text-zinc-400 text-xs">
+        Only these Discord users can talk to the bot — everyone else is silently
+        ignored. Find a user's ID in Discord via Settings → Advanced → Developer
+        Mode, then right-click the user → Copy User ID.
+      </p>
+      {loaded && users.length === 0 && (
+        <p className="text-zinc-500">No users yet — finish onboarding to add the owner.</p>
+      )}
+      <div className="space-y-2">
+        {users.map((u) => (
+          <div
+            key={u.user_id}
+            className="flex items-center justify-between gap-3 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2"
+          >
+            <div className="min-w-0">
+              <p className="text-zinc-100 truncate">
+                <span className="font-medium">{u.username ? `@${u.username}` : 'unknown'}</span>
+                {u.user_id === ownerId && (
+                  <span className="ml-2 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-blue-950/60 text-blue-300 border border-blue-800">
+                    owner
+                  </span>
+                )}
+              </p>
+              <p className="text-zinc-500 text-xs">
+                <code className="text-zinc-400">{u.user_id}</code>
+              </p>
+            </div>
+            {u.user_id !== ownerId && (
               <button
-                onClick={() => unlink(g.id)}
-                disabled={unlinking === g.id}
+                onClick={() => remove(u)}
+                disabled={busy}
                 className="shrink-0 px-3 py-1.5 border border-red-900/60 bg-red-950/20 hover:bg-red-950/40 text-red-200 rounded text-xs font-medium disabled:opacity-50"
               >
-                {unlinking === g.id ? 'Unlinking…' : 'Unlink'}
+                Remove
               </button>
-            </div>
-          ))}
-          <p className="text-zinc-500 text-xs">
-            Each link is its own conversation with its own session — topic links only react
-            inside that exact topic; whole-group links react to every message in the group.
-            Your private chat keeps working as usual.
-          </p>
-        </div>
-      ) : (
-        <p className="text-zinc-400">
-          Optionally link group topics — the relay answers there in addition to your
-          private chat, each with its own separate conversation.
-        </p>
-      )}
-
-      {capturing ? (
-        <div className="space-y-3">
-          <ol className="list-decimal list-inside text-zinc-300 space-y-1">
-            <li>
-              Add <span className="font-mono">{bot}</span> to your group (if it isn't already).
-            </li>
-            <li>
-              Make sure the bot can see messages: either disable privacy mode via{' '}
-              <a
-                className="underline text-zinc-100"
-                href="https://t.me/BotFather"
-                target="_blank"
-                rel="noreferrer"
-              >
-                @BotFather
-              </a>{' '}
-              (<span className="font-mono">/setprivacy</span> → Disable) or make the bot a
-              group admin.
-            </li>
-            {mode === 'topic' ? (
-              <>
-                <li>
-                  Enable <span className="font-medium">Topics</span> in the group settings and
-                  create your topic (if you haven't yet).
-                </li>
-                <li>Send any message inside that topic.</li>
-              </>
-            ) : (
-              <li>Send any message in the group.</li>
             )}
-          </ol>
-          {mode === 'topic' && (
-            <p className="text-zinc-500 text-xs">
-              Messages outside a topic are ignored while linking — the bot replies with a
-              hint and keeps waiting until it sees a topic message.
-            </p>
-          )}
-          <div className="flex items-center gap-3">
-            <span className="inline-flex items-center gap-2 text-zinc-400">
-              <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-              {mode === 'topic'
-                ? 'Waiting for a message in a topic…'
-                : 'Waiting for a message in the group…'}
-            </span>
-            <button
-              onClick={cancelCapture}
-              className="text-zinc-400 hover:text-zinc-200 underline"
-            >
-              Cancel
-            </button>
           </div>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <div>
-            <div className="text-xs uppercase tracking-wide text-zinc-500 mb-1.5">
-              Link scope
-            </div>
-            <div className="inline-flex rounded-lg border border-zinc-700 overflow-hidden text-sm font-medium">
-              {(
-                [
-                  { id: 'topic', label: 'Specific topic' },
-                  { id: 'group', label: 'Entire group' },
-                ] as Array<{ id: GroupCaptureMode; label: string }>
-              ).map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => setMode(m.id)}
-                  disabled={busy}
-                  className={[
-                    'px-3 py-1.5 transition-colors disabled:opacity-50',
-                    mode === m.id
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800',
-                  ].join(' ')}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
-            <p className="text-zinc-500 text-xs mt-1.5">
-              {mode === 'topic'
-                ? 'Link one forum topic — the bot only reacts inside that topic.'
-                : 'Link the whole group — the bot reacts to every message in it.'}
-            </p>
-          </div>
-          <button
-            onClick={startCapture}
-            disabled={busy}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded text-sm font-medium"
-          >
-            {groups.length > 0 ? 'Add another group topic' : 'Add a group topic'}
-          </button>
-        </div>
-      )}
+        ))}
+      </div>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          add();
+        }}
+        className="flex gap-2 flex-wrap"
+      >
+        <input
+          value={newId}
+          onChange={(e) => setNewId(e.target.value)}
+          placeholder="Discord user ID (long number)"
+          className="flex-1 min-w-[180px] bg-zinc-950 border border-zinc-700 rounded px-3 py-2 text-xs font-mono text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-blue-600"
+        />
+        <input
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          placeholder="username (optional label)"
+          className="w-44 bg-zinc-950 border border-zinc-700 rounded px-3 py-2 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-blue-600"
+        />
+        <button
+          type="submit"
+          disabled={busy || !newId.trim()}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded text-xs font-medium"
+        >
+          Add user
+        </button>
+      </form>
+      {error && <p className="text-red-400">{error}</p>}
+    </div>
+  );
+}
 
+function ModelCard() {
+  const [model, setModelState] = useState<string | null>(null);
+  const [effort, setEffortState] = useState<EffortLevel | null>(null);
+  const [aliases, setAliases] = useState<string[]>(['fable', 'opus', 'sonnet', 'haiku']);
+  const [efforts, setEfforts] = useState<EffortLevel[]>(['low', 'medium', 'high', 'xhigh', 'max']);
+  const [customModel, setCustomModel] = useState('');
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      const r = await api.modelConfig();
+      setModelState(r.model);
+      setEffortState(r.effort);
+      setAliases(r.model_aliases);
+      setEfforts(r.effort_levels);
+      setCustomModel(r.model && !r.model_aliases.includes(r.model) ? r.model : '');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoaded(true);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const apply = async (body: { model?: string; effort?: string }) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.setModelConfig(body);
+      setModelState(r.model);
+      setEffortState(r.effort);
+      if (body.model !== undefined) {
+        setCustomModel(r.model && !aliases.includes(r.model) ? r.model : '');
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!loaded) {
+    return (
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 text-sm text-zinc-500">
+        {error ?? 'Loading…'}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 text-sm space-y-4">
+      <p className="text-zinc-400 text-xs">
+        Passed to <code className="text-zinc-300">claude -p</code> as{' '}
+        <code className="text-zinc-300">--model</code> /{' '}
+        <code className="text-zinc-300">--effort</code>. "Default" leaves the choice
+        to the CLI. Changes apply from the next message — no session reset. Also
+        available in chat via <code className="text-zinc-300">/model</code> and{' '}
+        <code className="text-zinc-300">/effort</code>.
+      </p>
+      <div>
+        <div className="text-xs uppercase tracking-wide text-zinc-500 mb-1.5">Model</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="inline-flex rounded-lg border border-zinc-700 overflow-hidden text-sm font-medium">
+            {['default', ...aliases].map((m) => (
+              <button
+                key={m}
+                onClick={() => apply({ model: m === 'default' ? '' : m })}
+                disabled={busy}
+                className={[
+                  'px-3 py-1.5 transition-colors disabled:opacity-50',
+                  (m === 'default' && model === null) || model === m
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800',
+                ].join(' ')}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (customModel.trim()) apply({ model: customModel.trim() });
+            }}
+            className="flex gap-2"
+          >
+            <input
+              value={customModel}
+              onChange={(e) => setCustomModel(e.target.value)}
+              placeholder="full model id…"
+              className="w-56 bg-zinc-950 border border-zinc-700 rounded px-3 py-1.5 text-xs font-mono text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-blue-600"
+            />
+            <button
+              type="submit"
+              disabled={busy || !customModel.trim() || customModel.trim() === model}
+              className="px-3 py-1.5 border border-zinc-700 bg-zinc-900 hover:bg-zinc-800 rounded text-xs disabled:opacity-50"
+            >
+              Use
+            </button>
+          </form>
+        </div>
+        {model && !aliases.includes(model) && (
+          <p className="text-zinc-500 text-xs mt-1.5">
+            Using custom model <code className="text-zinc-300">{model}</code>
+          </p>
+        )}
+      </div>
+      <div>
+        <div className="text-xs uppercase tracking-wide text-zinc-500 mb-1.5">Effort</div>
+        <div className="inline-flex rounded-lg border border-zinc-700 overflow-hidden text-sm font-medium">
+          {['default', ...efforts].map((l) => (
+            <button
+              key={l}
+              onClick={() => apply({ effort: l === 'default' ? '' : l })}
+              disabled={busy}
+              className={[
+                'px-3 py-1.5 transition-colors disabled:opacity-50',
+                (l === 'default' && effort === null) || effort === l
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800',
+              ].join(' ')}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+      </div>
       {error && <p className="text-red-400">{error}</p>}
     </div>
   );
@@ -1271,7 +1440,7 @@ function FeedItem({ event }: { event: FeedEvent }) {
   const isIn = event.direction === 'in';
   return (
     <Row
-      label={isIn ? '→ Telegram' : '← Agent'}
+      label={isIn ? '→ Discord' : '← Agent'}
       ts={ts}
       tone={isIn ? 'in' : event.ok ? 'out' : 'error'}
       session={event.session_id}

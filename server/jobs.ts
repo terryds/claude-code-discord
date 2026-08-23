@@ -3,9 +3,9 @@
  *
  * Each enabled row in the `jobs` table gets a `Bun.cron` registration that
  * spawns the job's script. The output contract: a run's non-empty stdout is
- * sent to the linked Telegram chat as a rich message; empty stdout means
- * "nothing to report" and stays silent. Scripts never talk to Telegram
- * themselves — that keeps them testable by running them directly.
+ * sent to the job's Discord delivery channel; empty stdout means "nothing to
+ * report" and stays silent. Scripts never talk to Discord themselves — that
+ * keeps them testable by running them directly.
  *
  * Bun.cron guarantees scheduled fires of one job never overlap (the next fire
  * is computed after the callback settles); the `running` set extends that
@@ -14,7 +14,7 @@
 import { dirname, join, resolve } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
 import { listJobs, getJob, recordJobRun, type Job } from './db.ts';
-import { sendTelegramRich } from './telegram.ts';
+import { ownerDmChannelId, sendDiscord } from './discord.ts';
 
 export const JOBS_DIR = resolve('./data/jobs');
 
@@ -70,7 +70,12 @@ async function recordRunOutcome(job: Job, exitCode: number, output: string): Pro
   if (exitCode === 0) return;
   console.warn(`[jobs] "${job.name}" exited ${exitCode}: ${output.slice(0, 300)}`);
   if (updated && updated.consecutive_failures === FAILURE_NOTIFY_AT) {
-    await sendTelegramRich(
+    // Failure warnings go to the owner's DM, not the job's channel — a broken
+    // watcher is the owner's problem, not the alert channel's.
+    const dm = await ownerDmChannelId();
+    if (!dm) return;
+    await sendDiscord(
+      dm,
       `⚠️ Scheduled job **${job.name}** has failed ${FAILURE_NOTIFY_AT} times in a row ` +
         `(exit ${exitCode}). Last error:\n\`\`\`\n${output.slice(0, 1000) || '(no output)'}\n\`\`\`\n` +
         `I'll stay quiet about it until it succeeds again — ask me to look into it or say "remove the ${job.name} job".`
@@ -132,8 +137,13 @@ export async function runJobNow(id: number): Promise<JobRunResult | { error: str
 
     let sent = false;
     if (exitCode === 0 && message) {
-      sent = (await sendTelegramRich(message)).ok;
-      if (!sent) console.error(`[jobs] "${job.name}" produced a message but Telegram delivery failed`);
+      // Deliver to the job's channel; fall back to the owner's DM for legacy
+      // rows created without one.
+      const dest = job.channel_id ?? (await ownerDmChannelId());
+      if (dest) {
+        sent = (await sendDiscord(dest, message)).ok;
+      }
+      if (!sent) console.error(`[jobs] "${job.name}" produced a message but Discord delivery failed`);
     }
     return { exit_code: exitCode, output: stored, sent };
   } catch (e) {

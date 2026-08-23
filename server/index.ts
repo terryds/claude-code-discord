@@ -27,13 +27,15 @@ import {
   isJobRunning,
 } from './jobs.ts';
 import { fetchBookmarkMeta } from './bookmark-meta.ts';
-import { getBotInfo, getRecentChats, getTelegramConfig } from './telegram.ts';
 import {
-  ENGINE_IDS,
-  ENGINE_LABELS,
-  getEngineId,
-  setEngineId,
-  isEngineId,
+  getBotInfo,
+  getApplicationId,
+  getDiscordConfig,
+  inviteUrl,
+  listGuilds,
+  listGuildTextChannels,
+} from './discord.ts';
+import {
   isAuthMethod,
   getAuthConfig,
   setAuthMethod,
@@ -42,7 +44,7 @@ import {
   saveAuthProbe,
   clearAuthProbe,
 } from './engine.ts';
-import { getEngine } from './engines.ts';
+import { claudeEngine } from './claude-runner.ts';
 import { getPersona, setPersona, isCustomPersona, DEFAULT_PERSONA } from './persona.ts';
 import {
   startClaudeLogin,
@@ -50,36 +52,42 @@ import {
   cancelClaudeLogin,
   claudeLoginStatus,
 } from './claude-login.ts';
-import { startCodexLogin, cancelCodexLogin, codexLoginState } from './codex-login.ts';
 import { updateInfo, checkForUpdates, startUpdate } from './updater.ts';
-import {
-  startQrPairing,
-  pollQrPairing,
-  cancelQrPairing,
-  clearQrPairings,
-} from './qr-onboarding.ts';
 import {
   startListener,
   isRelayEnabled,
   setRelayEnabled,
   setCaptureMode,
-  getCapturedChatId,
-  listGroupLinks,
-  unlinkGroup,
-  unlinkAllGroups,
-  setGroupCaptureMode,
-  getGroupCaptureMode,
-  isGroupCapturing,
+  getCapturedUser,
+  getDefaultChannelMode,
+  setDefaultChannelMode,
   clearAllSessions,
   stopAllRuns,
-  applyBotCommands,
-  skipBacklog,
-} from './tg-listener.ts';
+} from './discord-listener.ts';
+import {
+  listAllowedUsers,
+  addAllowedUser,
+  removeAllowedUser,
+  listChannelModes,
+  setChannelMode,
+  clearChannelMode,
+  isChannelMode,
+} from './db.ts';
+import {
+  getModel,
+  setModel,
+  getEffort,
+  setEffort,
+  isEffortLevel,
+  MODEL_ALIASES,
+  EFFORT_LEVELS,
+} from './engine.ts';
 import { setDashboardPort } from './dashboard-url.ts';
 
-// Default to 8000 (exe.dev's default port); fall back to 3000 if it's taken.
-// An explicit PORT env var always wins and is used as-is (no fallback).
-const PORT_CANDIDATES = process.env.PORT ? [Number(process.env.PORT)] : [8000, 3000];
+// Default to 8100 (distinct from the Telegram relay's 8000, so both can run
+// on one host); fall back to 8101 if it's taken. An explicit PORT env var
+// always wins and is used as-is (no fallback).
+const PORT_CANDIDATES = process.env.PORT ? [Number(process.env.PORT)] : [8100, 8101];
 const CLIENT_DIR = resolve('./dist/client');
 
 const MIME: Record<string, string> = {
@@ -119,7 +127,7 @@ async function readBody<T = unknown>(req: Request): Promise<T> {
 }
 
 function isOnboarded(): boolean {
-  return Boolean(getSetting('telegram_bot_token') && getSetting('telegram_chat_id'));
+  return Boolean(getSetting('discord_bot_token') && getSetting('discord_owner_id'));
 }
 
 /** "myapp.example.com:3001" — the fallback bookmark title when a page has none. */
@@ -143,41 +151,38 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
   const m = req.method;
 
   if (p === '/status' && m === 'GET') {
-    const cfg = getTelegramConfig();
+    const cfg = getDiscordConfig();
     const bot = cfg.botToken
       ? await getBotInfo(cfg.botToken).then((r) => (r.ok ? r.bot : null))
       : null;
+    const appId = cfg.botToken ? await getApplicationId() : null;
     return json({
       onboarded: isOnboarded(),
       bot_token_set: Boolean(cfg.botToken),
-      chat_id: cfg.chatId,
       bot,
+      invite_url: appId ? inviteUrl(appId) : null,
+      owner_id: cfg.ownerId,
+      owner_username: getSetting('discord_owner_username'),
       relay_enabled: isRelayEnabled(),
-      groups: listGroupLinks(),
-      engine: getEngineId(),
-      engines: ENGINE_IDS.map((id) => ({ id, label: ENGINE_LABELS[id] })),
-      auth: { ...getAuthConfig(getEngineId()), last: getLastAuthProbe(getEngineId()) },
+      default_mode: getDefaultChannelMode(),
+      model: getModel(),
+      effort: getEffort(),
+      auth: { ...getAuthConfig(), last: getLastAuthProbe() },
     });
   }
 
-  // Verify a given engine's CLI is installed. `?engine=claude|codex`
-  // (defaults to the active engine). `/claude-check` kept as a back-compat alias.
+  // Verify the Claude CLI is installed. `/claude-check` kept as an alias.
   if ((p === '/agent-check' || p === '/claude-check') && m === 'GET') {
-    const q = url.searchParams.get('engine');
-    const id = q && isEngineId(q) ? q : p === '/claude-check' ? 'claude' : getEngineId();
-    const result = await getEngine(id).check();
+    const result = await claudeEngine.check();
     return json(result);
   }
 
-  // Live-probe whether the given engine's CLI is authenticated. Slow (runs a
-  // tiny real turn). `?engine=claude|codex` (defaults to the active engine).
+  // Live-probe whether the CLI is authenticated. Slow (runs a tiny real turn).
   if (p === '/auth-check' && m === 'GET') {
-    const q = url.searchParams.get('engine');
-    const id = q && isEngineId(q) ? q : getEngineId();
-    const result = await getEngine(id).checkAuth();
+    const result = await claudeEngine.checkAuth();
     // Cache the outcome so the dashboard can show auth state without
     // re-probing on every load.
-    const rec = saveAuthProbe(id, result);
+    const rec = saveAuthProbe(result);
     return json({ ...result, checked_at: rec.checked_at });
   }
 
@@ -185,29 +190,25 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
   // last cached probe result, without probing. Used by the dashboard to render
   // the current state cheaply.
   if (p === '/auth-config' && m === 'GET') {
-    const q = url.searchParams.get('engine');
-    const id = q && isEngineId(q) ? q : getEngineId();
-    return json({ ...getAuthConfig(id), last: getLastAuthProbe(id) });
+    return json({ ...getAuthConfig(), last: getLastAuthProbe() });
   }
 
   // Update auth setup: switch method and/or save (or clear) the API key.
   if (p === '/auth-config' && m === 'POST') {
-    const body = await readBody<{ engine?: string; method?: string; apiKey?: string }>(req);
-    const id = (body.engine || getEngineId()).trim();
-    if (!isEngineId(id)) return err(400, 'engine must be "claude" or "codex"');
+    const body = await readBody<{ method?: string; apiKey?: string }>(req);
     if (body.method !== undefined) {
       if (!isAuthMethod(body.method)) {
         return err(400, 'method must be "subscription" or "apikey"');
       }
-      setAuthMethod(id, body.method);
-      clearAuthProbe(id); // setup changed — the cached probe no longer applies
+      setAuthMethod(body.method);
+      clearAuthProbe(); // setup changed — the cached probe no longer applies
     }
     // An explicit empty string clears the saved key; undefined leaves it alone.
     if (body.apiKey !== undefined) {
-      setApiKey(id, body.apiKey);
-      clearAuthProbe(id);
+      setApiKey(body.apiKey);
+      clearAuthProbe();
     }
-    return json({ ok: true, ...getAuthConfig(id) });
+    return json({ ok: true, ...getAuthConfig() });
   }
 
   // Claude subscription sign-in, driven from the dashboard (no terminal).
@@ -232,45 +233,9 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     return json(claudeLoginStatus());
   }
 
-  // Codex subscription sign-in (device-authorization flow). Start → returns the
-  // verification URL + one-time code; the user enters it in their browser and
-  // the CLI polls to completion (no paste needed).
-  if (p === '/auth/codex-login/start' && m === 'POST') {
-    try {
-      return json(await startCodexLogin());
-    } catch (e) {
-      return err(400, e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  if (p === '/auth/codex-login/status' && m === 'GET') {
-    return json(codexLoginState());
-  }
-
-  if (p === '/auth/codex-login/cancel' && m === 'POST') {
-    cancelCodexLogin();
-    return json({ ok: true });
-  }
-
   if (p === '/auth/claude-login/cancel' && m === 'POST') {
     cancelClaudeLogin();
     return json({ ok: true });
-  }
-
-  if (p === '/engine' && m === 'GET') {
-    return json({ engine: getEngineId() });
-  }
-
-  if (p === '/engine' && m === 'POST') {
-    const body = await readBody<{ engine?: string }>(req);
-    const id = (body.engine || '').trim();
-    if (!isEngineId(id)) return err(400, 'engine must be "claude" or "codex"');
-    // Sessions don't carry across engines; stop in-flight runs and clear so
-    // the next message is fresh.
-    stopAllRuns();
-    clearAllSessions();
-    setEngineId(id);
-    return json({ ok: true, engine: id });
   }
 
   if (p === '/persona' && m === 'GET') {
@@ -297,45 +262,26 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     if (!token) return err(400, 'Token required');
     const r = await getBotInfo(token);
     if (!r.ok) return err(400, `Invalid token: ${r.error}`);
-    setSetting('telegram_bot_token', token);
-    // Reset any prior chat link so capture starts fresh, and drop the old
-    // bot's getUpdates offset (meaningless — possibly harmful — for the new one).
-    deleteSetting('telegram_chat_id');
-    deleteSetting('telegram_update_offset');
-    return json({ ok: true, bot: r.bot });
-  }
-
-  // QR onboarding (managed bots): mint a pairing at the setup service, show
-  // the QR, poll until Telegram hands over the new bot's token. The poll
-  // response never contains the token itself — only the getMe result.
-  if (p === '/onboarding/qr/start' && m === 'POST') {
-    const r = await startQrPairing();
-    if (!r.ok) return err(502, r.error);
-    return json(r.pairing);
-  }
-
-  const qrPoll = p.match(/^\/onboarding\/qr\/([A-Za-z0-9]+)$/);
-  if (qrPoll && m === 'GET') {
-    const r = await pollQrPairing(qrPoll[1]);
-    if (!r) return err(404, 'Unknown pairing');
-    return json(r);
-  }
-
-  const qrCancel = p.match(/^\/onboarding\/qr\/([A-Za-z0-9]+)\/cancel$/);
-  if (qrCancel && m === 'POST') {
-    cancelQrPairing(qrCancel[1]);
-    return json({ ok: true });
+    setSetting('discord_bot_token', token);
+    // Reset any prior owner link so capture starts fresh; resolve and cache
+    // the application id (used for the invite URL and slash commands).
+    deleteSetting('discord_owner_id');
+    deleteSetting('discord_owner_username');
+    deleteSetting('discord_dm_channel_id');
+    const appId = await getApplicationId(token);
+    if (appId) setSetting('discord_app_id', appId);
+    return json({ ok: true, bot: r.bot, invite_url: appId ? inviteUrl(appId) : null });
   }
 
   if (p === '/onboarding/start-capture' && m === 'POST') {
-    if (!getSetting('telegram_bot_token')) return err(400, 'Save a bot token first');
-    await skipBacklog();
+    if (!getSetting('discord_bot_token')) return err(400, 'Save a bot token first');
     setCaptureMode(true);
     return json({ ok: true });
   }
 
   if (p === '/onboarding/captured' && m === 'GET') {
-    return json({ chat_id: getCapturedChatId() });
+    const c = getCapturedUser();
+    return json({ user_id: c?.user_id ?? null, username: c?.username ?? null });
   }
 
   if (p === '/onboarding/cancel-capture' && m === 'POST') {
@@ -343,39 +289,111 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
 
-  // Group-topic links: same capture flow as onboarding, but for group chats
-  // (optionally a forum topic inside one), added one at a time. Existing links
-  // stay active while capturing; the client polls /group/status and treats
-  // capturing flipping to false as "done".
-  if (p === '/group/start-capture' && m === 'POST') {
-    if (!getSetting('telegram_bot_token')) return err(400, 'Save a bot token first');
-    const body = await readBody<{ mode?: string }>(req);
-    // 'topic' waits for a message inside a forum topic; 'group' links the
-    // whole group off any group message. Default: topic.
-    const mode = body.mode === 'group' ? 'group' : 'topic';
-    await skipBacklog();
-    setGroupCaptureMode(mode);
-    return json({ ok: true, mode });
+  // Allowed users: who may talk to the bot. The onboarding user is the owner
+  // (first row, matches discord_owner_id) and can't be removed.
+  if (p === '/allowed-users' && m === 'GET') {
+    return json({ users: listAllowedUsers(), owner_id: getSetting('discord_owner_id') });
   }
 
-  if (p === '/group/status' && m === 'GET') {
+  if (p === '/allowed-users' && m === 'POST') {
+    const body = await readBody<{ user_id?: string; username?: string }>(req);
+    const userId = (body.user_id || '').trim();
+    if (!/^\d{5,25}$/.test(userId)) {
+      return err(400, 'user_id must be a Discord user id (a long number)');
+    }
+    addAllowedUser(userId, (body.username || '').trim() || null);
+    return json({ ok: true, users: listAllowedUsers() });
+  }
+
+  const auDelete = p.match(/^\/allowed-users\/(\d+)$/);
+  if (auDelete && m === 'DELETE') {
+    const userId = auDelete[1];
+    if (userId === getSetting('discord_owner_id')) {
+      return err(400, "The owner can't be removed");
+    }
+    if (!removeAllowedUser(userId)) return err(404, 'No such user');
+    return json({ ok: true, users: listAllowedUsers() });
+  }
+
+  // Channels & response modes: the bot's guilds' text channels merged with the
+  // saved per-channel overrides, plus the global default mode.
+  if (p === '/channels' && m === 'GET') {
+    const overrides = listChannelModes();
+    const g = await listGuilds();
+    if (!g.ok) {
+      // Still show saved overrides so the page works while Discord is down.
+      return json({
+        default_mode: getDefaultChannelMode(),
+        guilds: [],
+        channels: [],
+        overrides,
+        error: g.error,
+      });
+    }
+    const channels: Array<{ id: string; name: string; guild_id: string; guild_name: string }> = [];
+    for (const guild of g.guilds) {
+      const c = await listGuildTextChannels(guild.id);
+      if (!c.ok) continue;
+      for (const ch of c.channels) {
+        channels.push({ id: ch.id, name: ch.name, guild_id: guild.id, guild_name: guild.name });
+      }
+    }
+    return json({ default_mode: getDefaultChannelMode(), guilds: g.guilds, channels, overrides });
+  }
+
+  if (p === '/channel-mode' && m === 'POST') {
+    const body = await readBody<{
+      channel_id?: string;
+      mode?: string;
+      channel_name?: string;
+      guild_name?: string;
+    }>(req);
+    const channelId = (body.channel_id || '').trim();
+    if (!channelId) return err(400, 'channel_id required');
+    const mode = (body.mode || '').trim();
+    if (mode === 'default') {
+      clearChannelMode(channelId);
+      return json({ ok: true });
+    }
+    if (!isChannelMode(mode)) {
+      return err(400, 'mode must be "free", "mention", "ignore", or "default"');
+    }
+    setChannelMode(channelId, mode, {
+      channel_name: body.channel_name ?? null,
+      guild_name: body.guild_name ?? null,
+    });
+    return json({ ok: true });
+  }
+
+  if (p === '/default-mode' && m === 'POST') {
+    const body = await readBody<{ mode?: string }>(req);
+    const mode = (body.mode || '').trim();
+    if (!isChannelMode(mode)) return err(400, 'mode must be "free", "mention", or "ignore"');
+    setDefaultChannelMode(mode);
+    return json({ ok: true, default_mode: mode });
+  }
+
+  // Model & effort passed to `claude -p` (--model / --effort). Empty clears.
+  if (p === '/model' && m === 'GET') {
     return json({
-      capturing: isGroupCapturing(),
-      mode: getGroupCaptureMode(),
-      groups: listGroupLinks(),
+      model: getModel(),
+      effort: getEffort(),
+      model_aliases: MODEL_ALIASES,
+      effort_levels: EFFORT_LEVELS,
     });
   }
 
-  if (p === '/group/cancel-capture' && m === 'POST') {
-    setGroupCaptureMode(null);
-    return json({ ok: true });
-  }
-
-  if (p === '/group/unlink' && m === 'POST') {
-    const body = await readBody<{ id?: number }>(req);
-    if (typeof body.id !== 'number') return err(400, 'Link id required');
-    if (!unlinkGroup(body.id)) return err(404, 'No such link');
-    return json({ ok: true });
+  if (p === '/model' && m === 'POST') {
+    const body = await readBody<{ model?: string; effort?: string }>(req);
+    if (body.model !== undefined) setModel(body.model);
+    if (body.effort !== undefined) {
+      const e = body.effort.trim();
+      if (e && !isEffortLevel(e)) {
+        return err(400, `effort must be one of ${EFFORT_LEVELS.join(', ')} (or empty to clear)`);
+      }
+      setEffort(e);
+    }
+    return json({ ok: true, model: getModel(), effort: getEffort() });
   }
 
   if (p === '/relay' && m === 'POST') {
@@ -383,10 +401,6 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     const enabled = Boolean(body.enabled);
     if (enabled && !isOnboarded()) return err(400, 'Finish onboarding first');
     setRelayEnabled(enabled);
-    if (enabled) {
-      await skipBacklog();
-      applyBotCommands().catch(() => {});
-    }
     return json({ ok: true, enabled });
   }
 
@@ -489,10 +503,12 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
       description?: string;
       schedule?: string;
       script_path?: string;
+      channel_id?: string;
     }>(req);
     const name = (body.name || '').trim();
     const schedule = (body.schedule || '').trim();
     const scriptPath = resolve((body.script_path || '').trim());
+    const channelId = (body.channel_id || '').trim();
     if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(name)) {
       return err(400, 'name must be a short slug (letters, digits, - and _)');
     }
@@ -502,16 +518,28 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     if (!body.script_path || !existsSync(scriptPath)) {
       return err(400, `script not found: ${scriptPath}`);
     }
-    // Upsert by name so re-registering a watcher updates it in place.
     const existing = getJobByName(name);
+    // Delivery channel is required — the user must have named where alerts go
+    // (their DM channel id counts as an explicit choice).
+    if (!channelId && !existing?.channel_id) {
+      return err(400, 'channel_id (Discord delivery channel) required');
+    }
+    // Upsert by name so re-registering a watcher updates it in place.
     const job = existing
       ? updateJob(existing.id, {
           // Empty description on a re-register keeps the existing one.
           description: (body.description || '').trim() || existing.description,
           schedule,
           script_path: scriptPath,
+          ...(channelId ? { channel_id: channelId } : {}),
         })
-      : addJob({ name, description: (body.description || '').trim(), schedule, script_path: scriptPath });
+      : addJob({
+          name,
+          description: (body.description || '').trim(),
+          schedule,
+          script_path: scriptPath,
+          channel_id: channelId,
+        });
     syncJobs();
     return json({ ok: true, job: { ...job!, next_run_at: nextRunAt(job!.schedule) } });
   }
@@ -524,6 +552,7 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
       description?: string;
       schedule?: string;
       script_path?: string;
+      channel_id?: string;
       enabled?: boolean;
     }>(req);
     if (body.schedule !== undefined) {
@@ -537,6 +566,7 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
       ...(body.description !== undefined ? { description: body.description } : {}),
       ...(body.schedule !== undefined ? { schedule: body.schedule.trim() } : {}),
       ...(body.script_path !== undefined ? { script_path: resolve(body.script_path) } : {}),
+      ...(body.channel_id !== undefined ? { channel_id: body.channel_id.trim() } : {}),
       ...(body.enabled !== undefined ? { enabled: Boolean(body.enabled) } : {}),
     });
     syncJobs();
@@ -572,24 +602,18 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     return json({ events: recentFeed(limit) });
   }
 
-  if (p === '/chats' && m === 'GET') {
-    const token = getSetting('telegram_bot_token');
-    if (!token) return err(400, 'No bot token');
-    const r = await getRecentChats(token);
-    if (!r.ok) return err(400, r.error);
-    return json({ chats: r.chats });
-  }
-
   if (p === '/reset' && m === 'POST') {
     stopAllRuns();
     setRelayEnabled(false);
-    deleteSetting('telegram_bot_token');
-    deleteSetting('telegram_chat_id');
+    deleteSetting('discord_bot_token');
+    deleteSetting('discord_app_id');
+    deleteSetting('discord_owner_id');
+    deleteSetting('discord_owner_username');
+    deleteSetting('discord_dm_channel_id');
     clearAllSessions();
-    deleteSetting('captured_chat_id');
-    deleteSetting('capture_chat_id');
-    clearQrPairings();
-    unlinkAllGroups();
+    deleteSetting('captured_user_id');
+    deleteSetting('captured_username');
+    deleteSetting('capture_user');
     return json({ ok: true });
   }
 
@@ -638,11 +662,6 @@ function serveStatic(url: URL): Response {
 startListener();
 startJobScheduler();
 
-// Refresh the Telegram command menu on boot so deploys pick up command changes.
-// (Otherwise setMyCommands only runs when the relay is toggled on, leaving the
-// menu stale across restarts.)
-if (isRelayEnabled()) applyBotCommands().catch(() => {});
-
 const fetchHandler = async (req: Request) => {
   const url = new URL(req.url);
   if (url.pathname.startsWith('/api')) {
@@ -674,4 +693,4 @@ function serve() {
 const server = serve();
 setDashboardPort(server.port);
 
-console.log(`claude-code-telegram-assistant listening on http://localhost:${server.port}`);
+console.log(`claude-code-discord-coworker listening on http://localhost:${server.port}`);

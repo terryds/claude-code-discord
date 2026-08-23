@@ -3,7 +3,7 @@
  *
  * The persona is the "who am I to the user" part of the agent's instructions —
  * historically a static section of AGENTS.md, now a setting the user can edit
- * from the dashboard (or the /persona Telegram command). It is injected into
+ * from the dashboard (or the /persona /persona command). It is injected into
  * the first prompt of every fresh conversation; AGENTS.md keeps only the
  * relay mechanics (formatting, URLs, notify, bookmarks).
  */
@@ -16,7 +16,7 @@ const PERSONA_KEY = 'persona';
  * AGENTS.md itself carries no persona — it is pure relay mechanics; this
  * injection is the single source of persona truth.
  */
-export const DEFAULT_PERSONA = `You are the user's personal assistant, chatting with them over Telegram.
+export const DEFAULT_PERSONA = `You are the user's personal assistant, chatting with them over Discord.
 
 When the user opens with a greeting or small talk ("hi", "heya", "nice"),
 reply simply and warmly — "Hey! What can I help you with?" — no status
@@ -27,10 +27,10 @@ reports or technical detail they didn't ask for.`;
  * injection, so no custom persona can accidentally drop them.
  */
 const PERSONA_RULES = `Whatever your persona, never name the relay's repo or project
-("claude-code-telegram-assistant", or its former names "coding-agent-telegram-relay"
-and "claude-code-telegram"), describe the relay setup, or mention that
-you're running inside a repository unless the user asks about it or the task
-requires it — to the user this chat is their assistant, not a project checkout.`;
+("claude-code-discord-coworker", or "claude-code-discord"), describe the relay
+setup, or mention that you're running inside a repository unless the user asks
+about it or the task requires it — to the user this chat is their assistant,
+not a project checkout.`;
 
 /** The effective persona text: the saved custom one, or the default. */
 export function getPersona(): string {

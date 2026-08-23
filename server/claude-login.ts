@@ -178,7 +178,7 @@ export async function startClaudeLogin(): Promise<{ url: string }> {
             // Credentials now live on the host (~/.claude / keychain). Clear
             // any legacy setup-token from the DB so runs and auth probes stop
             // overriding the machine-wide login.
-            setOauthToken('claude', '');
+            setOauthToken('');
             s.state = 'done';
           } else if (
             /OAuth error:|Invalid code|expired|Press Enter to retry|Login failed/i.test(clean)

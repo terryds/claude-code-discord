@@ -1,24 +1,12 @@
 import { useEffect, useState } from 'react';
-import { api, type AuthMethod, type EngineAuth, type EngineId } from '../api';
+import { api, type AuthMethod, type EngineAuth } from '../api';
 
-const DOCS: Record<
-  EngineId,
-  { label: string; loginCmd: string; keyEnv: string; keyHelp: string; href: string }
-> = {
-  claude: {
-    label: 'Claude Code',
-    loginCmd: 'claude auth login',
-    keyEnv: 'ANTHROPIC_API_KEY',
-    keyHelp: 'Anthropic API key (starts with sk-ant-…)',
-    href: 'https://docs.claude.com/en/docs/claude-code/overview',
-  },
-  codex: {
-    label: 'Codex',
-    loginCmd: 'codex login',
-    keyEnv: 'OPENAI_API_KEY',
-    keyHelp: 'OpenAI API key (starts with sk-…)',
-    href: 'https://developers.openai.com/codex/cli',
-  },
+const DOCS = {
+  label: 'Claude Code',
+  loginCmd: 'claude auth login',
+  keyEnv: 'ANTHROPIC_API_KEY',
+  keyHelp: 'Anthropic API key (starts with sk-ant-…)',
+  href: 'https://docs.claude.com/en/docs/claude-code/overview',
 };
 
 function timeAgo(ts: number): string {
@@ -32,16 +20,15 @@ function timeAgo(ts: number): string {
 }
 
 type Props = {
-  engine: EngineId;
-  /** Run a live probe on mount / engine change. Onboarding wants this; the
-   *  dashboard defaults to off (probing costs a request) and probes on demand. */
+  /** Run a live probe on mount. Onboarding wants this; the dashboard defaults
+   *  to off (probing costs a request) and probes on demand. */
   autoProbe?: boolean;
   /** Notified whenever a probe resolves, so a parent can gate on auth. */
   onAuthed?: (authed: boolean) => void;
 };
 
-export function AgentAuth({ engine, autoProbe = true, onAuthed }: Props) {
-  const docs = DOCS[engine];
+export function AgentAuth({ autoProbe = true, onAuthed }: Props) {
+  const docs = DOCS;
 
   const [method, setMethod] = useState<AuthMethod>('subscription');
   const [hasKey, setHasKey] = useState(false);
@@ -60,17 +47,11 @@ export function AgentAuth({ engine, autoProbe = true, onAuthed }: Props) {
   const [loginBusy, setLoginBusy] = useState<'start' | 'submit' | null>(null);
   const [loginErr, setLoginErr] = useState<string | null>(null);
 
-  // Interactive Codex subscription sign-in (device-auth flow).
-  const [codexUrl, setCodexUrl] = useState<string | null>(null);
-  const [codexCode, setCodexCode] = useState<string | null>(null);
-  const [codexBusy, setCodexBusy] = useState(false);
-  const [codexErr, setCodexErr] = useState<string | null>(null);
-
   const probe = async () => {
     setChecking(true);
     setErr(null);
     try {
-      const r = await api.authCheck(engine);
+      const r = await api.authCheck();
       setAuth(r);
       setMethod(r.method);
       setHasKey(r.hasKey);
@@ -86,7 +67,7 @@ export function AgentAuth({ engine, autoProbe = true, onAuthed }: Props) {
 
   const loadConfig = async () => {
     try {
-      const c = await api.authConfig(engine);
+      const c = await api.authConfig();
       setMethod(c.method);
       setHasKey(c.hasKey);
       // The server caches the last probe's outcome — show it instantly instead
@@ -105,19 +86,18 @@ export function AgentAuth({ engine, autoProbe = true, onAuthed }: Props) {
   };
 
   useEffect(() => {
-    // Reset per-engine state, then either probe (onboarding) or show the
-    // cached result (dashboard) so we don't spend a request on every page load.
+    // Either probe (onboarding) or show the cached result (dashboard) so we
+    // don't spend a request on every page load.
     setAuth(null);
     setProbed(false);
     setCheckedAt(null);
     setKey('');
     resetLogin();
-    resetCodexLogin();
     onAuthed?.(false);
     if (autoProbe) probe();
     else loadConfig();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine]);
+  }, []);
 
   const resetLogin = () => {
     setLoginUrl(null);
@@ -151,61 +131,6 @@ export function AgentAuth({ engine, autoProbe = true, onAuthed }: Props) {
       setLoginBusy(null);
     }
   };
-
-  const resetCodexLogin = () => {
-    setCodexUrl(null);
-    setCodexCode(null);
-    setCodexErr(null);
-    api.codexLoginCancel().catch(() => {});
-  };
-
-  const startCodexLogin = async () => {
-    setCodexBusy(true);
-    setCodexErr(null);
-    try {
-      const r = await api.codexLoginStart();
-      setCodexCode(r.code);
-      setCodexUrl(r.url); // starts the status poll (effect below)
-    } catch (e) {
-      setCodexErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setCodexBusy(false);
-    }
-  };
-
-  // Poll the Codex device-auth sign-in until the CLI finishes (the user enters
-  // the code in their browser) — surfaces as state 'done'.
-  useEffect(() => {
-    if (!codexUrl) return;
-    let stopped = false;
-    let timer: number | null = null;
-    const tick = async () => {
-      try {
-        const s = await api.codexLoginState();
-        if (stopped) return;
-        if (s.state === 'done') {
-          setCodexUrl(null);
-          setCodexCode(null);
-          await probe();
-          return;
-        }
-        if (s.state === 'error') {
-          setCodexErr(s.error || 'Sign-in failed — try again.');
-          setCodexUrl(null);
-          return;
-        }
-      } catch {
-        // keep polling
-      }
-      if (!stopped) timer = window.setTimeout(tick, 2000);
-    };
-    timer = window.setTimeout(tick, 2000);
-    return () => {
-      stopped = true;
-      if (timer) window.clearTimeout(timer);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [codexUrl]);
 
   // While a sign-in is in progress, poll for completion. `claude auth login`
   // polls the OAuth server itself, so it finishes on its own once the user
@@ -247,7 +172,7 @@ export function AgentAuth({ engine, autoProbe = true, onAuthed }: Props) {
     setMethod(m);
     setErr(null);
     try {
-      await api.setAuthConfig(engine, { method: m });
+      await api.setAuthConfig({ method: m });
       await probe();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -258,7 +183,7 @@ export function AgentAuth({ engine, autoProbe = true, onAuthed }: Props) {
     setSaving(true);
     setErr(null);
     try {
-      await api.setAuthConfig(engine, { method: 'apikey', apiKey: key.trim() });
+      await api.setAuthConfig({ method: 'apikey', apiKey: key.trim() });
       setKey('');
       await probe();
     } catch (e) {
@@ -333,172 +258,94 @@ export function AgentAuth({ engine, autoProbe = true, onAuthed }: Props) {
 
       {/* Method-specific guidance */}
       {method === 'subscription' ? (
-        engine === 'claude' ? (
-          <div className="text-sm space-y-3">
-            {!authed && (
-              <p className="text-zinc-400">
-                Sign in with your Claude subscription — no terminal needed.
+        <div className="text-sm space-y-3">
+          {!authed && (
+            <p className="text-zinc-400">
+              Sign in with your Claude subscription — no terminal needed.
+            </p>
+          )}
+          {!loginUrl ? (
+            <button
+              onClick={startLogin}
+              disabled={loginBusy === 'start' || checking}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded text-sm font-medium"
+            >
+              {loginBusy === 'start'
+                ? 'Starting…'
+                : authed
+                  ? 'Sign in again'
+                  : 'Sign in with Claude'}
+            </button>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-zinc-300">
+                Open the sign-in page and <strong>authorize</strong> — this
+                finishes on its own, even from your phone:
               </p>
-            )}
-            {!loginUrl ? (
-              <button
-                onClick={startLogin}
-                disabled={loginBusy === 'start' || checking}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded text-sm font-medium"
-              >
-                {loginBusy === 'start'
-                  ? 'Starting…'
-                  : authed
-                    ? 'Sign in again'
-                    : 'Sign in with Claude'}
-              </button>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-zinc-300">
-                  Open the sign-in page and <strong>authorize</strong> — this
-                  finishes on its own, even from your phone:
-                </p>
-                <div className="flex gap-2">
-                  <a
-                    href={loginUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-xs font-medium"
-                  >
-                    Open sign-in page ↗
-                  </a>
-                  <button
-                    onClick={() => navigator.clipboard?.writeText(loginUrl)}
-                    className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-xs"
-                  >
-                    Copy link
-                  </button>
-                </div>
-                <div className="inline-flex items-center gap-2 text-zinc-400 text-xs">
-                  <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-                  Waiting for you to authorize…
-                </div>
-                <div className="border-t border-zinc-800 pt-3 space-y-1.5">
-                  <p className="text-zinc-400 text-xs">
-                    Authorized but stuck on “waiting”? Paste the code the page
-                    shows you — or the full callback URL:
-                  </p>
-                  <div className="flex gap-2">
-                    <input
-                      autoComplete="off"
-                      className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm font-mono"
-                      placeholder="paste code here…"
-                      value={loginCode}
-                      onChange={(e) => setLoginCode(e.target.value)}
-                      disabled={loginBusy === 'submit'}
-                    />
-                    <button
-                      onClick={submitLogin}
-                      disabled={loginBusy === 'submit' || !loginCode.trim()}
-                      className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded text-sm font-medium"
-                    >
-                      {loginBusy === 'submit' ? 'Sending…' : 'Submit code'}
-                    </button>
-                  </div>
-                </div>
-                <button
-                  onClick={resetLogin}
-                  className="text-zinc-500 hover:text-zinc-300 text-xs underline"
+              <div className="flex gap-2">
+                <a
+                  href={loginUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-xs font-medium"
                 >
-                  Cancel
+                  Open sign-in page ↗
+                </a>
+                <button
+                  onClick={() => navigator.clipboard?.writeText(loginUrl)}
+                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-xs"
+                >
+                  Copy link
                 </button>
               </div>
-            )}
-            {loginErr && (
-              <pre className="bg-zinc-900 text-red-300/90 text-xs p-3 rounded overflow-auto whitespace-pre-wrap">
-                {loginErr}
-              </pre>
-            )}
-            <p className="text-xs text-zinc-600">
-              Prefer the terminal? Run{' '}
-              <code className="text-zinc-400">claude auth login</code> on the host
-              instead. Either way the whole machine is signed in — plain{' '}
-              <code className="text-zinc-400">claude</code> works outside the relay
-              too.
-            </p>
-          </div>
-        ) : (
-          <div className="text-sm space-y-3">
-            {!authed && (
-              <p className="text-zinc-400">
-                Sign in with your ChatGPT/Codex subscription — no terminal needed.
-              </p>
-            )}
-            {!codexUrl ? (
-              <button
-                onClick={startCodexLogin}
-                disabled={codexBusy || checking}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded text-sm font-medium"
-              >
-                {codexBusy ? 'Starting…' : authed ? 'Sign in again' : 'Sign in with Codex'}
-              </button>
-            ) : (
-              <div className="space-y-3">
-                <ol className="list-decimal list-inside space-y-2 text-zinc-300">
-                  <li>
-                    Open this page and sign in:
-                    <div className="mt-1 flex gap-2">
-                      <a
-                        href={codexUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-xs font-medium"
-                      >
-                        Open sign-in page ↗
-                      </a>
-                      <button
-                        onClick={() => navigator.clipboard?.writeText(codexUrl)}
-                        className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-xs"
-                      >
-                        Copy link
-                      </button>
-                    </div>
-                  </li>
-                  <li>
-                    Enter this one-time code:
-                    <div className="mt-1 flex items-center gap-2">
-                      <code className="px-3 py-1.5 bg-zinc-900 border border-zinc-700 rounded text-base font-mono tracking-widest text-zinc-100">
-                        {codexCode}
-                      </code>
-                      <button
-                        onClick={() => codexCode && navigator.clipboard?.writeText(codexCode)}
-                        className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-xs"
-                      >
-                        Copy code
-                      </button>
-                    </div>
-                  </li>
-                </ol>
-                <div className="inline-flex items-center gap-2 text-zinc-400 text-xs">
-                  <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-                  Waiting for you to authorize…
-                </div>
-                <div>
+              <div className="inline-flex items-center gap-2 text-zinc-400 text-xs">
+                <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+                Waiting for you to authorize…
+              </div>
+              <div className="border-t border-zinc-800 pt-3 space-y-1.5">
+                <p className="text-zinc-400 text-xs">
+                  Authorized but stuck on “waiting”? Paste the code the page
+                  shows you — or the full callback URL:
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    autoComplete="off"
+                    className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm font-mono"
+                    placeholder="paste code here…"
+                    value={loginCode}
+                    onChange={(e) => setLoginCode(e.target.value)}
+                    disabled={loginBusy === 'submit'}
+                  />
                   <button
-                    onClick={resetCodexLogin}
-                    className="text-zinc-500 hover:text-zinc-300 text-xs underline"
+                    onClick={submitLogin}
+                    disabled={loginBusy === 'submit' || !loginCode.trim()}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded text-sm font-medium"
                   >
-                    Cancel
+                    {loginBusy === 'submit' ? 'Sending…' : 'Submit code'}
                   </button>
                 </div>
               </div>
-            )}
-            {codexErr && (
-              <pre className="bg-zinc-900 text-red-300/90 text-xs p-3 rounded overflow-auto whitespace-pre-wrap">
-                {codexErr}
-              </pre>
-            )}
-            <p className="text-xs text-zinc-600">
-              Prefer the terminal? Run <code className="text-zinc-400">codex login</code>{' '}
-              on the host instead.
-            </p>
-          </div>
-        )
+              <button
+                onClick={resetLogin}
+                className="text-zinc-500 hover:text-zinc-300 text-xs underline"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+          {loginErr && (
+            <pre className="bg-zinc-900 text-red-300/90 text-xs p-3 rounded overflow-auto whitespace-pre-wrap">
+              {loginErr}
+            </pre>
+          )}
+          <p className="text-xs text-zinc-600">
+            Prefer the terminal? Run{' '}
+            <code className="text-zinc-400">claude auth login</code> on the host
+            instead. Either way the whole machine is signed in — plain{' '}
+            <code className="text-zinc-400">claude</code> works outside the relay
+            too.
+          </p>
+        </div>
       ) : (
         <div className="text-sm space-y-2">
           <p className="text-zinc-400">
@@ -526,7 +373,7 @@ export function AgentAuth({ engine, autoProbe = true, onAuthed }: Props) {
           </div>
           {hasKey && (
             <button
-              onClick={() => api.setAuthConfig(engine, { apiKey: '' }).then(() => setHasKey(false))}
+              onClick={() => api.setAuthConfig({ apiKey: '' }).then(() => setHasKey(false))}
               className="text-zinc-500 hover:text-zinc-300 text-xs underline"
             >
               Remove saved key
