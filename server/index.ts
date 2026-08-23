@@ -164,6 +164,30 @@ function stripHtml(html: string): string {
     .trim();
 }
 
+/**
+ * Convert the small HTML subset Telegram-flavored senders use (b/i/a/code) to
+ * Discord Markdown — links survive as [label](url) instead of being stripped
+ * to bare text. Unknown tags are dropped.
+ */
+function htmlToMarkdown(html: string): string {
+  return html
+    .replace(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href: string, label: string) => {
+      const text = stripHtml(label);
+      const url = href.replace(/&amp;/g, '&');
+      return text && url ? `[${text}](${url})` : text || url;
+    })
+    .replace(/<\/?(b|strong)>/gi, '**')
+    .replace(/<\/?(i|em)>/gi, '*')
+    .replace(/<\/?(code|pre)>/gi, '`')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim();
+}
+
 /** The slice of Bun.Server the API needs (the full type is generic across bun-types versions). */
 type RequestIPServer = { requestIP(req: Request): { address: string } | null };
 
@@ -204,13 +228,14 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
     }
     // Discord renders Markdown natively, so "md" and "plain" send as-is;
     // "html" (the Telegram relay's default — accepted so the same payload
-    // works against both relays) is stripped to plain text first.
+    // works against both relays) is converted to Markdown first, keeping
+    // links as [label](url) instead of stripping them.
     const format = body.format === undefined ? 'md' : body.format;
     if (format !== 'html' && format !== 'plain' && format !== 'md') {
       return err(400, 'format must be "md", "plain", or "html"');
     }
-    const text = format === 'html' ? stripHtml(rawText) : rawText;
-    if (!text) return err(400, 'text is empty after HTML stripping');
+    const text = format === 'html' ? htmlToMarkdown(rawText) : rawText;
+    if (!text) return err(400, 'text is empty after HTML conversion');
     if (!isOnboarded()) return err(503, 'relay not linked to a Discord owner yet');
 
     const explicitChannel =
@@ -221,7 +246,10 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
     const dest = explicitChannel ?? dm;
     if (!dest) return err(503, "couldn't resolve the owner's DM channel");
 
-    const r = await sendDiscord(dest, text);
+    // Suppress link-preview embeds — a many-link digest would otherwise
+    // become an embed wall (mirrors the Telegram relay's
+    // disable_web_page_preview). Links stay tappable.
+    const r = await sendDiscord(dest, text, { suppressEmbeds: true });
     logMessage({
       direction: 'out',
       text: `[${source}${kind ? ` · ${kind}` : ''}] ${text}`,
@@ -235,7 +263,7 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
       const context =
         typeof body.context === 'string' && body.context.trim()
           ? body.context.trim()
-          : stripHtml(text);
+          : stripHtml(rawText);
       if (context) {
         // Queue under the conversation the alert landed in, so the next
         // message *there* gets the FYI.

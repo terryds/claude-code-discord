@@ -196,7 +196,8 @@ curl -s -X POST http://127.0.0.1:8100/api/notify \
   the owner's DM. The agent-context note is queued for *that* conversation.
 - `format` — `"md"` (Discord-native Markdown, default), `"plain"` (same),
   or `"html"` (accepted for compatibility with the Telegram relay's payloads
-  — tags are stripped to plain text before sending).
+  — b/i/a/code tags are converted to Markdown, so links survive as
+  `[label](url)`; other tags are stripped).
 - `context` (optional) — plain-text summary queued for the agent: the next
   relayed turn in the target conversation starts with an FYI list of
   notifications delivered while the agent was idle, so replies that
