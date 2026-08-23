@@ -7,6 +7,7 @@
  * also works for one-off callers (jobs, bin scripts mirror the same calls)
  * and doesn't depend on the gateway connection being up.
  */
+import { getDashboardUrl } from './dashboard-url.ts';
 import { deleteSetting, getSetting, setSetting } from './db.ts';
 
 export type DiscordConfig = {
@@ -87,6 +88,24 @@ export async function getApplicationId(token?: string): Promise<string | null> {
   if (cached && !token) return cached;
   const r = await discordApi<{ id: string }>('GET', '/applications/@me', undefined, token);
   return r.ok ? r.data.id : cached;
+}
+
+/**
+ * Point the bot's profile at the dashboard: the application description is
+ * what Discord shows as the bot's "About Me", so it carries the dashboard URL.
+ * Returns true when a reachable URL was known and Discord accepted it — the
+ * caller can then truthfully tell the user to look at the bot's profile.
+ */
+export async function applyBotDescription(): Promise<boolean> {
+  const url = getDashboardUrl();
+  if (!url) return false;
+  const description =
+    `Relay to a coding agent running on this machine.\n` +
+    `Dashboard (message logs, bookmarks, settings): ${url}`;
+  if (description.length > 400) return false; // Discord's description cap
+  const r = await discordApi('PATCH', '/applications/@me', { description });
+  if (!r.ok) console.warn('[discord] could not set app description:', r.error);
+  return r.ok;
 }
 
 /**

@@ -65,6 +65,7 @@ import { claudeEngine } from './claude-runner.ts';
 import {
   DISCORD_FILE_LIMIT,
   SESSION_PREFIX,
+  applyBotDescription,
   channelSessionKey,
   createThreadFromMessage,
   dmSessionKey,
@@ -214,6 +215,9 @@ async function connect(token: string): Promise<void> {
     botUser = { id: ready.user.id, username: ready.user.username };
     setSetting('discord_app_id', ready.application.id);
     console.log(`[discord] connected as @${ready.user.username}`);
+    // Keep the profile's dashboard link current (host/port can change between
+    // restarts). No-op when no reachable URL is known yet.
+    void applyBotDescription();
     void registerSlashCommands().catch((e) =>
       console.error('[discord] slash registration failed:', e)
     );
@@ -802,13 +806,17 @@ export const ONBOARDING_EXAMPLE_PROMPT =
   "Deploy filebrowser from https://github.com/filebrowser/filebrowser so I can browse this computer's files from my phone, like Windows Explorer / Finder. Set it up and send me the URL when it's ready.";
 
 async function sendOnboardingDone(channelId: string): Promise<void> {
+  const inProfile = await applyBotDescription();
   const dashboardUrl = getDashboardUrl();
   await sendDiscord(
     channelId,
     [
-      "✅ You're all set — I'm your coding agent on this machine.",
+      "✅ You're all set — I'm your coding agent on this machine." +
+        (inProfile
+          ? " I've also put the dashboard link in my bot profile, so it's always one tap away — that's where you can see message logs, bookmarks, settings, and more:"
+          : ''),
       ...(dashboardUrl
-        ? ['', `Dashboard (message logs, bookmarks, settings): ${dashboardUrl}`]
+        ? ['', inProfile ? dashboardUrl : `Dashboard (message logs, bookmarks, settings): ${dashboardUrl}`]
         : []),
       '',
       'What can I help you with?',
