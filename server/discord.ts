@@ -121,7 +121,7 @@ export function inviteUrl(appId: string): string {
 const STEP_DELETE_KEY = 'step_delete_seconds';
 export const STEP_DELETE_DEFAULT = 60;
 /** Choices offered in the dashboard (0 = never); any 0–86400 value is valid. */
-export const STEP_DELETE_CHOICES = [0, 30, 60, 300, 900] as const;
+export const STEP_DELETE_CHOICES = [0, 30, 60, 300, 900, 1800, 3600, 7200] as const;
 
 export function getStepDeleteSeconds(): number {
   const v = getSetting(STEP_DELETE_KEY);

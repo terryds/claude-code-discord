@@ -1428,11 +1428,14 @@ const STEP_DELETE_LABELS: Record<number, string> = {
   60: '1 min',
   300: '5 min',
   900: '15 min',
+  1800: '30 min',
+  3600: '1 hour',
+  7200: '2 hours',
 };
 
 function StepDeleteCard() {
   const [seconds, setSeconds] = useState<number | null>(null);
-  const [choices, setChoices] = useState<number[]>([0, 30, 60, 300, 900]);
+  const [choices, setChoices] = useState<number[]>([0, 30, 60, 300, 900, 1800, 3600, 7200]);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
