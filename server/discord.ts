@@ -7,7 +7,7 @@
  * also works for one-off callers (jobs, bin scripts mirror the same calls)
  * and doesn't depend on the gateway connection being up.
  */
-import { getSetting } from './db.ts';
+import { deleteSetting, getSetting, setSetting } from './db.ts';
 
 export type DiscordConfig = {
   botToken: string | null;
@@ -112,6 +112,29 @@ export function inviteUrl(appId: string): string {
   );
 }
 
+// ── Step auto-delete setting ────────────────────────────────────────
+//
+// How long streamed step messages (🧠 thinking, 🛠 tool calls, ✅ results)
+// stay in Discord before the relay deletes them, in seconds. 0 = never
+// delete. Final replies are never touched.
+
+const STEP_DELETE_KEY = 'step_delete_seconds';
+export const STEP_DELETE_DEFAULT = 60;
+/** Choices offered in the dashboard (0 = never); any 0–86400 value is valid. */
+export const STEP_DELETE_CHOICES = [0, 30, 60, 300, 900] as const;
+
+export function getStepDeleteSeconds(): number {
+  const v = getSetting(STEP_DELETE_KEY);
+  if (v === null) return STEP_DELETE_DEFAULT;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 ? n : STEP_DELETE_DEFAULT;
+}
+
+export function setStepDeleteSeconds(seconds: number): void {
+  if (seconds === STEP_DELETE_DEFAULT) deleteSetting(STEP_DELETE_KEY);
+  else setSetting(STEP_DELETE_KEY, String(seconds));
+}
+
 // ── Sending ─────────────────────────────────────────────────────────
 
 /** Discord's hard cap on message content for bots. */
@@ -176,10 +199,11 @@ export async function sendDiscord(
   channelId: string,
   markdown: string,
   options: SendOptions = {}
-): Promise<{ ok: boolean; error?: string }> {
-  if (!markdown.trim()) return { ok: true };
+): Promise<{ ok: boolean; error?: string; messageIds?: string[] }> {
+  if (!markdown.trim()) return { ok: true, messageIds: [] };
+  const messageIds: string[] = [];
   for (const chunk of splitMarkdown(markdown)) {
-    const r = await discordApi(
+    const r = await discordApi<{ id?: string }>(
       'POST',
       `/channels/${channelId}/messages`,
       {
@@ -189,9 +213,19 @@ export async function sendDiscord(
       },
       options.token
     );
-    if (!r.ok) return { ok: false, error: r.error };
+    if (!r.ok) return { ok: false, error: r.error, messageIds };
+    if (r.data?.id) messageIds.push(r.data.id);
   }
-  return { ok: true };
+  return { ok: true, messageIds };
+}
+
+/** Delete one message (bots can always delete their own). */
+export async function deleteDiscordMessage(
+  channelId: string,
+  messageId: string
+): Promise<{ ok: boolean; error?: string }> {
+  const r = await discordApi('DELETE', `/channels/${channelId}/messages/${messageId}`);
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
 }
 
 /** Fire the typing indicator (lasts ~10s; refresh while a run is active). */

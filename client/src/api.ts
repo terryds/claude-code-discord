@@ -239,6 +239,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  stepDelete: () => request<{ seconds: number; choices: number[] }>('/step-delete'),
+  setStepDelete: (seconds: number) =>
+    request<{ ok: true; seconds: number }>('/step-delete', {
+      method: 'POST',
+      body: JSON.stringify({ seconds }),
+    }),
   setRelay: (enabled: boolean) =>
     request<{ ok: true; enabled: boolean }>('/relay', {
       method: 'POST',

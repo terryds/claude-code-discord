@@ -40,6 +40,9 @@ import {
   dmSessionKey,
   sessionKeyForChannel,
   sendDiscord,
+  getStepDeleteSeconds,
+  setStepDeleteSeconds,
+  STEP_DELETE_CHOICES,
 } from './discord.ts';
 import {
   isAuthMethod,
@@ -520,6 +523,22 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
       setEffort(e);
     }
     return json({ ok: true, model: getModel(), effort: getEffort() });
+  }
+
+  // How long streamed step messages stay in Discord before the relay deletes
+  // them. Seconds; 0 = never delete. Final replies are never deleted.
+  if (p === '/step-delete' && m === 'GET') {
+    return json({ seconds: getStepDeleteSeconds(), choices: STEP_DELETE_CHOICES });
+  }
+
+  if (p === '/step-delete' && m === 'POST') {
+    const body = await readBody<{ seconds?: number }>(req);
+    const s = body.seconds;
+    if (typeof s !== 'number' || !Number.isInteger(s) || s < 0 || s > 86400) {
+      return err(400, 'seconds must be an integer between 0 (never) and 86400');
+    }
+    setStepDeleteSeconds(s);
+    return json({ ok: true, seconds: getStepDeleteSeconds() });
   }
 
   if (p === '/relay' && m === 'POST') {

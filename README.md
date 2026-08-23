@@ -170,6 +170,10 @@ Slash-command replies are ephemeral (only you see them). Text commands answer in
 
 The agent streams its progress (thinking, tool calls, results) into the conversation as it works, and the gateway keeps receiving the whole time. Send `/stop` to cancel that conversation's run, or just send a new prompt — it auto-stops the running task and starts the new one. Stopping is a hard process kill: file edits already made stay on disk; the interrupted turn isn't saved to the session.
 
+### Step message cleanup
+
+To keep channels readable, those streamed step messages are **auto-deleted 1 minute after they're posted** (the final reply always stays). Change the delay — or set it to **Never** to keep every step — under **Step messages** in the dashboard. Deletions are queued in the database, so pending cleanups survive a relay restart.
+
 ## Attachments
 
 Images, audio, video, and any other file you attach are downloaded to `data/incoming/<attachment_id>-<name>` and the local path (plus MIME type) is appended to the prompt — Claude reads images/text/PDFs with its `Read` tool and handles the rest with its own tools (ffmpeg, transcription, …). Discord's standard 25 MB upload limit applies. Files are not auto-deleted — wipe `data/incoming/` periodically if you don't want them around.

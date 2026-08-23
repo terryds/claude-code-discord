@@ -42,6 +42,10 @@ import {
   getChannelModeOverride,
   isChannelMode,
   drainPendingContext,
+  queueStepDelete,
+  dueStepDeletes,
+  clearStepDelete,
+  expireStepDeletes,
   type ChannelMode,
   type PendingContextRow,
 } from './db.ts';
@@ -65,8 +69,10 @@ import {
   createThreadFromMessage,
   dmSessionKey,
   downloadAttachment,
+  deleteDiscordMessage,
   discordApi,
   getApplicationId,
+  getStepDeleteSeconds,
   openDmChannel,
   sendDiscord,
   sendTyping,
@@ -174,6 +180,10 @@ export function startListener(): void {
   };
   void tick();
   setInterval(() => void tick().catch((e) => console.error('[discord] watchdog:', e)), 5000);
+  setInterval(
+    () => void sweepStepDeletes().catch((e) => console.error('[discord] step sweep:', e)),
+    STEP_DELETE_SWEEP_MS
+  );
 }
 
 async function teardownClient(): Promise<void> {
@@ -281,7 +291,41 @@ async function sendStep(step: EngineStep, channelId: string): Promise<void> {
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   lastStepSentAt = Date.now();
   const r = await sendDiscord(channelId, msg, { suppressEmbeds: true });
-  if (!r.ok) console.error(`[discord] step send failed: ${r.error}`);
+  if (!r.ok) {
+    console.error(`[discord] step send failed: ${r.error}`);
+    return;
+  }
+  // Auto-delete: queue each posted chunk; the sweeper (startListener) deletes
+  // them once due. TTL is read per step, so a settings change applies to steps
+  // from that moment on — already-queued ones keep their original deadline.
+  const ttlSeconds = getStepDeleteSeconds();
+  if (ttlSeconds > 0 && r.messageIds) {
+    const deleteAt = Date.now() + ttlSeconds * 1000;
+    for (const id of r.messageIds) queueStepDelete(channelId, id, deleteAt);
+  }
+}
+
+// ── Step auto-delete sweeper ────────────────────────────────────────
+//
+// Deletes queued step messages once their deadline passes. Transient failures
+// (network, rate limit) leave the row for the next pass; rows that keep
+// failing are dropped after an hour so they can't retry forever.
+
+const STEP_DELETE_SWEEP_MS = 5000;
+const STEP_DELETE_GIVE_UP_MS = 60 * 60 * 1000;
+// Permanent outcomes: message already gone (404/10008), no access (401/403),
+// or a malformed id (400). 429s never match — discordApi reports them as
+// "Discord rate limited".
+const PERMANENT_DELETE_ERROR_RE = /Discord (400|401|403|404)\b/;
+
+async function sweepStepDeletes(): Promise<void> {
+  for (const row of dueStepDeletes(Date.now())) {
+    const r = await deleteDiscordMessage(row.channel_id, row.message_id);
+    if (r.ok || PERMANENT_DELETE_ERROR_RE.test(r.error ?? '')) {
+      clearStepDelete(row.channel_id, row.message_id);
+    }
+  }
+  expireStepDeletes(Date.now() - STEP_DELETE_GIVE_UP_MS);
 }
 
 // ── Active run tracking ─────────────────────────────────────────────

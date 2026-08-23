@@ -136,6 +136,21 @@ db.run(`
   )
 `);
 
+// Step messages already posted to Discord and scheduled for deletion (the
+// "auto-delete steps" setting). A sweeper in discord-listener.ts deletes due
+// rows; queueing in the DB (vs setTimeout) keeps pending deletes across relay
+// restarts, e.g. safe-update-relay.
+db.run(`
+  CREATE TABLE IF NOT EXISTS step_deletes (
+    channel_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    delete_at INTEGER NOT NULL,
+    PRIMARY KEY (channel_id, message_id)
+  )
+`);
+
+db.run('CREATE INDEX IF NOT EXISTS idx_step_deletes_delete_at ON step_deletes(delete_at)');
+
 export function getSetting(key: string): string | null {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
     | { value: string }
@@ -472,6 +487,38 @@ export function logStep(step: ClaudeStep, sessionId: string | null): void {
     step.toolInput ?? null,
     step.resultText ?? null
   );
+}
+
+// ── Step auto-delete queue ──────────────────────────────────────────
+
+export function queueStepDelete(channelId: string, messageId: string, deleteAt: number): void {
+  db.prepare(
+    `INSERT INTO step_deletes (channel_id, message_id, delete_at) VALUES (?, ?, ?)
+     ON CONFLICT(channel_id, message_id) DO UPDATE SET delete_at = excluded.delete_at`
+  ).run(channelId, messageId, deleteAt);
+}
+
+export function dueStepDeletes(
+  now: number,
+  limit = 25
+): Array<{ channel_id: string; message_id: string }> {
+  return db
+    .prepare(
+      'SELECT channel_id, message_id FROM step_deletes WHERE delete_at <= ? ORDER BY delete_at ASC LIMIT ?'
+    )
+    .all(now, limit) as Array<{ channel_id: string; message_id: string }>;
+}
+
+export function clearStepDelete(channelId: string, messageId: string): void {
+  db.prepare('DELETE FROM step_deletes WHERE channel_id = ? AND message_id = ?').run(
+    channelId,
+    messageId
+  );
+}
+
+/** Drop rows stuck past `cutoff` (delete keeps failing) so they can't loop forever. */
+export function expireStepDeletes(cutoff: number): void {
+  db.prepare('DELETE FROM step_deletes WHERE delete_at <= ?').run(cutoff);
 }
 
 export type FeedEvent =

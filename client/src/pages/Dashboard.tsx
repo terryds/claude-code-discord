@@ -235,6 +235,13 @@ export function Dashboard({ status, onChange }: Props) {
 
       <section>
         <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
+          Step messages
+        </h2>
+        <StepDeleteCard />
+      </section>
+
+      <section>
+        <h2 className="font-medium mb-3 text-sm uppercase tracking-wide text-zinc-400">
           Persona
         </h2>
         <PersonaCard />
@@ -1410,6 +1417,87 @@ function ModelCard() {
           ))}
         </div>
       </div>
+      {error && <p className="text-red-400">{error}</p>}
+    </div>
+  );
+}
+
+const STEP_DELETE_LABELS: Record<number, string> = {
+  0: 'Never',
+  30: '30 sec',
+  60: '1 min',
+  300: '5 min',
+  900: '15 min',
+};
+
+function StepDeleteCard() {
+  const [seconds, setSeconds] = useState<number | null>(null);
+  const [choices, setChoices] = useState<number[]>([0, 30, 60, 300, 900]);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .stepDelete()
+      .then((r) => {
+        setSeconds(r.seconds);
+        setChoices(r.choices);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoaded(true));
+  }, []);
+
+  const apply = async (s: number) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.setStepDelete(s);
+      setSeconds(r.seconds);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!loaded) {
+    return (
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 text-sm text-zinc-500">
+        {error ?? 'Loading…'}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-5 text-sm space-y-3">
+      <p className="text-zinc-400 text-xs">
+        Intermediate progress messages streamed to Discord during a run (🧠 thinking,
+        🛠 tool calls, ✅ results) are deleted after this delay to cut the noise. The
+        final reply always stays. Applies to steps posted after the change.
+      </p>
+      <div className="inline-flex rounded-lg border border-zinc-700 overflow-hidden text-sm font-medium">
+        {choices.map((s) => (
+          <button
+            key={s}
+            onClick={() => apply(s)}
+            disabled={busy}
+            className={[
+              'px-3 py-1.5 transition-colors disabled:opacity-50',
+              seconds === s
+                ? 'bg-blue-600 text-white'
+                : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800',
+            ].join(' ')}
+          >
+            {STEP_DELETE_LABELS[s] ?? `${s} sec`}
+          </button>
+        ))}
+      </div>
+      {seconds !== null && !choices.includes(seconds) && (
+        <p className="text-zinc-500 text-xs">
+          Using custom delay: {seconds} seconds.
+        </p>
+      )}
       {error && <p className="text-red-400">{error}</p>}
     </div>
   );
