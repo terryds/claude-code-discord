@@ -3,6 +3,8 @@ import { Router, Route, Switch, Redirect } from 'wouter';
 import { api, type Status } from './api';
 import { Onboarding } from './pages/Onboarding';
 import { Dashboard } from './pages/Dashboard';
+import { Capabilities } from './pages/Capabilities';
+import { Memories } from './pages/Memories';
 
 export function App() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -59,6 +61,12 @@ export function App() {
           ) : (
             <Redirect to="/onboarding" />
           )}
+        </Route>
+        <Route path="/capabilities">
+          {status.onboarded ? <Capabilities /> : <Redirect to="/onboarding" />}
+        </Route>
+        <Route path="/memories">
+          {status.onboarded ? <Memories /> : <Redirect to="/onboarding" />}
         </Route>
         <Route>
           <Redirect to="/" />

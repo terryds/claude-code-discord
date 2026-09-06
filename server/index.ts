@@ -62,6 +62,9 @@ import {
   claudeLoginStatus,
 } from './claude-login.ts';
 import { updateInfo, checkForUpdates, startUpdate } from './updater.ts';
+import { getCachedMcp, refreshMcp, listPlugins, checkRequiredSkills } from './capabilities.ts';
+import { listSkills } from './skills.ts';
+import { memoriesReport } from './memories.ts';
 import {
   startListener,
   isRelayEnabled,
@@ -365,6 +368,27 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
   if (p === '/auth/claude-login/cancel' && m === 'POST') {
     cancelClaudeLogin();
     return json({ ok: true });
+  }
+
+  // Read-only inventory for the Capabilities page. Skills and plugins are
+  // cheap filesystem scans; the MCP list is served from cache (a live check
+  // takes seconds) — POST /capabilities/mcp/refresh re-runs it.
+  if (p === '/capabilities' && m === 'GET') {
+    return json({
+      skills: listSkills(),
+      plugins: listPlugins(),
+      mcp: getCachedMcp(),
+      required_skills: checkRequiredSkills(),
+    });
+  }
+
+  if (p === '/capabilities/mcp/refresh' && m === 'POST') {
+    return json(await refreshMcp());
+  }
+
+  // Read-only view of Claude Code's auto-memory + instruction files.
+  if (p === '/memories' && m === 'GET') {
+    return json(memoriesReport());
   }
 
   if (p === '/persona' && m === 'GET') {

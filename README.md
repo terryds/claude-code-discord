@@ -10,6 +10,8 @@ A tiny relay that forwards Discord messages to [Claude Code](https://docs.claude
 - **Commands both ways** — plain text (`/stop`, `/new_session`, …) and native slash commands with autocomplete and ephemeral replies
 - **Model & effort switch** — pick the Claude model (`fable`/`opus`/`sonnet`/`haiku` or any full id) and reasoning effort from the dashboard or `/model` / `/effort`
 - **Agent Discord tools** — the agent can search members, read channels, send messages, create threads, and react via `bin/discord` ("mention Andi and tell him…") 
+- **Capabilities page** — read-only inventory of what the host's Claude Code can reach: MCP servers with live health, skills (project, personal, plugin), and installed plugins
+- **Memories page** — what Claude Code remembers on the host: its auto-saved memories for the relay's project, the instruction files (CLAUDE.md / AGENTS.md / rules) it reads every run, and memory folders of other projects
 - **Scheduled jobs** — ask the agent to "watch X and alert me in #channel" and it writes a watcher script and registers it on a cron schedule with that channel as the delivery target; no billed agent turn per check (see `/jobs`, the dashboard card, and [docs/scheduled-jobs.md](docs/scheduled-jobs.md))
 - **Gateway is outbound-only** — the bot opens a WebSocket to Discord; nothing connects inbound to your machine, so it works behind NAT/VPN/private hosts (exe.dev, Tailscale) with no open ports
 
@@ -18,6 +20,7 @@ A tiny relay that forwards Discord messages to [Claude Code](https://docs.claude
 - [Bun](https://bun.sh) `>= 1.3.12`
 - **Claude Code** installed on the machine that runs the relay — [install](https://docs.claude.com/en/docs/claude-code/overview); `claude --version` must work. You can **authenticate it from the dashboard** during onboarding (see [Authentication](#authentication)), so it only needs to be on PATH.
 - `python3` — only for Claude's in-dashboard subscription sign-in (it drives a PTY). `bin/install` installs it; skip if you authenticate Claude another way.
+- The [`pty-oauth-login`](https://github.com/terryds/skills/tree/main/skills/pty-oauth-login) agent skill — lets Claude finish OAuth sign-ins (MCP servers etc.) from a Discord chat. `bin/install` installs it; by hand: `npx skills add terryds/skills --skill pty-oauth-login -g`
 - A Discord application + bot — created in the [Discord Developer Portal](https://discord.com/developers/applications) (onboarding walks you through it, ~2 minutes).
 
 ## Local development
@@ -67,6 +70,16 @@ The relay spawns your local `claude` CLI, so that CLI has to be authenticated. O
 - **API key** — paste an Anthropic key. It's stored in `data/app.db` and injected as `ANTHROPIC_API_KEY` when the relay runs (pay-per-token API billing, not your subscription).
 
 Detection is cheap — `claude auth status`, no model call. You can also authenticate the CLI yourself on the host (`claude auth login`) and the relay will pick it up.
+
+## Adding MCP servers, connectors and skills
+
+The dashboard's **Capabilities** page lists what the host's Claude Code can reach — MCP servers with live health, skills, plugins. It's read-only on purpose: you add things by asking over Discord, no SSH needed.
+
+- **Connectors on your Claude account** (Google Drive, Gmail, Notion, Canva…) are connected once in Claude Desktop / claude.ai → Settings → Connectors and follow your account, so this host gets them automatically. They appear as `claude.ai …` servers.
+- **MCP servers on this machine** — ask Claude, e.g. *"Add the Notion MCP server at https://mcp.notion.com/mcp and sign me in"*. Claude runs `claude mcp add`, and for OAuth uses the `pty-oauth-login` skill: it drives the login under a PTY, sends you the authorize link, you open it on your device and paste back the code or the redirect URL you land on (a `localhost:…` URL is expected), and Claude completes the sign-in. *"Sign in to the posthog MCP server"* uses the same flow for servers already configured.
+- **Skills** — *"Install the frontend-design skill from anthropics/skills"*. Claude installs it via the [skills.sh](https://skills.sh) CLI into `~/.claude/skills`. Plugins: *"Install the posthog plugin from the official marketplace"*.
+
+The **Memories** page shows what Claude remembers across conversations: auto-saved memories for the relay's project, the instruction files it reads every run, and other projects' memory folders on the host. Tell Claude *"remember that …"* or *"forget …"* to change them.
 
 ## Production build
 
@@ -134,9 +147,12 @@ Visit the dashboard, complete the three onboarding steps, and you're live. Messa
 cd ~/claude-code-discord
 git pull
 bun install            # if dependencies changed
+bin/install            # picks up new requirements (e.g. required agent skills); idempotent
 bun run build          # rebuild the client
 pm2 restart claude-code-discord-coworker
 ```
+
+`bin/safe-update-relay` (what `/update` and the dashboard's Update button run) does all of this for you, including installing any missing required skill.
 
 Your bot token, owner link, allowlist, channel modes, and sessions live in `data/app.db` — they survive restarts and code updates.
 

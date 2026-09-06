@@ -75,6 +75,82 @@ export type Status = {
   auth: AuthConfig;
 };
 
+export type SkillInfo = {
+  name: string;
+  description: string;
+  /** 'project' | 'personal' | 'plugin' */
+  source: string;
+  /** For plugin skills, the plugin's short name. */
+  plugin?: string;
+};
+
+export type McpStatus = 'connected' | 'needs_auth' | 'failed' | 'pending' | 'unknown';
+export type McpServer = {
+  name: string;
+  target: string;
+  transport: string | null;
+  status: McpStatus;
+  statusText: string;
+};
+export type McpSnapshot = { servers: McpServer[]; checked_at: number; error?: string };
+
+export type PluginInfo = {
+  id: string;
+  name: string;
+  marketplace: string;
+  version: string;
+  scope: string;
+  enabled: boolean;
+  installedAt: string | null;
+  lastUpdated: string | null;
+  description: string | null;
+  skills: number;
+  agents: number;
+  commands: number;
+  hasMcp: boolean;
+  hasHooks: boolean;
+};
+
+export type MemoryEntry = {
+  id: string;
+  name: string;
+  description: string;
+  type: string;
+  body: string;
+  modified: string | null;
+  file: string;
+};
+export type MemoryProject = {
+  slug: string;
+  cwd: string | null;
+  dir: string;
+  index: string | null;
+  memories: MemoryEntry[];
+};
+export type InstructionFile = {
+  label: string;
+  scope: 'project' | 'global';
+  path: string;
+  content: string;
+  modified: string | null;
+};
+export type MemoriesReport = {
+  cwd: string;
+  current: MemoryProject | null;
+  instructions: InstructionFile[];
+  others: MemoryProject[];
+};
+
+export type RequiredSkill = { name: string; installed: boolean };
+
+export type Capabilities = {
+  skills: SkillInfo[];
+  plugins: PluginInfo[];
+  mcp: McpSnapshot | null;
+  /** Skills the relay depends on (bin/install installs them). */
+  required_skills: RequiredSkill[];
+};
+
 export type CommitInfo = { sha: string; subject: string; date?: string };
 
 export type UpdateState = {
@@ -293,4 +369,7 @@ export const api = {
   feed: (limit = 300) =>
     request<{ events: FeedEvent[] }>(`/feed?limit=${limit}`),
   reset: () => request<{ ok: true }>('/reset', { method: 'POST' }),
+  capabilities: () => request<Capabilities>('/capabilities'),
+  refreshMcp: () => request<McpSnapshot>('/capabilities/mcp/refresh', { method: 'POST' }),
+  memories: () => request<MemoriesReport>('/memories'),
 };
