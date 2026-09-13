@@ -5,7 +5,7 @@ A tiny relay that forwards Discord messages to [Claude Code](https://docs.claude
 - **Stack**: [Bun](https://bun.sh) + React (Vite) + Tailwind + Wouter + `bun:sqlite` + [discord.js](https://discord.js.org) (gateway only)
 - **No vendor SDK for the agent** — spawns your local `claude` CLI (inherits its auth)
 - **Session per conversation** — each DM, channel, and thread is its own `claude --resume` session; **new threads always start fresh**, so context stays contained in the thread
-- **Channel response modes** — *free responses* (default: just talk, no mention needed; end a message with ` /t` to branch into a thread), *mention → thread* (Hermes-style: @mention the bot, it replies in a new thread), or *ignore* — per channel, from the dashboard
+- **Channel response modes** — *free responses* (default: just talk, no mention needed; put ` /t` anywhere in a message to branch into a thread), *mention → thread* (Hermes-style: @mention the bot, it replies in a new thread), or *ignore* — per channel, from the dashboard
 - **Allowlist** — only approved Discord users can drive the agent; the person who completes onboarding becomes the owner
 - **Commands both ways** — plain text (`/stop`, `/new_session`, …) and native slash commands with autocomplete and ephemeral replies
 - **Model & effort switch** — pick the Claude model (`fable`/`opus`/`sonnet`/`haiku` or any full id) and reasoning effort from the dashboard or `/model` / `/effort`
@@ -48,7 +48,7 @@ After that you're on the dashboard: channel modes, allowlist, model/effort, pers
 
 Every guild text channel has a **response mode** — a per-channel override or the global default (out of the box: `free`):
 
-- **Free responses** (default) — the bot answers every allowlisted user's message inline, no mention needed. End a message with ` /t` (or ` /thread`) and the bot instead creates a **thread** from it and answers there, with a **fresh session** — great for branching off a side-task without polluting the channel conversation.
+- **Free responses** (default) — the bot answers every allowlisted user's message inline, no mention needed. Put `/t` (or `/thread`) anywhere in a message, as its own word, and the bot instead creates a **thread** from it and answers there, with a **fresh session** — great for branching off a side-task without polluting the channel conversation.
 - **Mention → thread** — the bot only reacts when you @mention it; it creates a thread from your message (named after its first words) and replies inside, again with a fresh session. Messages that mention someone else (not the bot) are left alone.
 - **Ignored** — the bot never responds in the channel.
 

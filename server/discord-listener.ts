@@ -8,8 +8,9 @@
  * (inline replies), one per thread.
  *
  * Response modes (per channel, with a global default — 'free' out of the box):
- *  - free:    reply inline without requiring a mention; a message ending in
- *             " /t" (or " /thread") spawns a thread with a fresh session.
+ *  - free:    reply inline without requiring a mention; a standalone "/t"
+ *             (or "/thread") anywhere in the message spawns a thread with a
+ *             fresh session.
  *  - mention: only respond when @mentioned; the reply auto-creates a thread
  *             from the triggering message with a fresh session (Hermes-style).
  *  - ignore:  never respond in the channel.
@@ -530,8 +531,14 @@ function mentionsBot(text: string): boolean {
   return new RegExp(`<@!?${botUser.id}>`).test(text);
 }
 
-/** Trailing " /t" or " /thread" (case-insensitive) asks for a thread. */
-const THREAD_TRIGGER_RE = /\s+\/(t|thread)\s*$/i;
+/**
+ * A standalone "/t" or "/thread" token (case-insensitive) anywhere in the
+ * message asks for a thread. It must be delimited by whitespace (or the
+ * start/end of the message) on both sides, so "/terminal", "h/t" and URLs
+ * like "example.com/t" don't trigger. The leading whitespace is part of the
+ * match so stripping it doesn't leave a double space behind.
+ */
+const THREAD_TRIGGER_RE = /(?:^|\s+)\/(?:t|thread)(?=\s|$)/i;
 
 /** Hermes-style thread names: mention syntax stripped, first ~80 chars. */
 function deriveThreadName(content: string): string {
@@ -1010,7 +1017,7 @@ async function runCommand(
         '',
         `Send a message and I'll relay it to **${ENGINE_LABEL}** running on this machine.`,
         '',
-        'In channels I answer based on the channel mode (see the dashboard): in *free* channels just talk to me — end a message with ` /t` to branch into a thread with a fresh session; in *mention* channels @mention me and I reply in a new thread. DMs and my threads always work.',
+        'In channels I answer based on the channel mode (see the dashboard): in *free* channels just talk to me — put `/t` anywhere in a message to branch into a thread with a fresh session; in *mention* channels @mention me and I reply in a new thread. DMs and my threads always work.',
         '',
         'You can also attach files (images, audio, video, documents) — they get saved to disk and the file path is passed to the agent.',
         '',

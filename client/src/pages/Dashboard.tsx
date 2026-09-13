@@ -1010,7 +1010,7 @@ const MODE_LABELS: Record<ChannelMode, string> = {
 };
 
 const MODE_HELP: Record<ChannelMode, string> = {
-  free: 'The bot replies to every allowed user without a mention. End a message with " /t" to branch into a thread with a fresh session.',
+  free: 'The bot replies to every allowed user without a mention. Put "/t" anywhere in a message to branch into a thread with a fresh session.',
   mention: 'The bot only responds when @mentioned, and replies in a new thread with a fresh session.',
   ignore: 'The bot never responds in the channel.',
 };

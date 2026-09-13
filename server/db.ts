@@ -62,8 +62,8 @@ db.run(`
 
 // Per-channel response mode overrides. Channels with no row use the global
 // default (`default_channel_mode` setting, 'free' out of the box).
-//  - 'free':    reply inline without requiring a mention; a trailing /t
-//               spawns a thread instead.
+//  - 'free':    reply inline without requiring a mention; a standalone /t
+//               anywhere in the message spawns a thread instead.
 //  - 'mention': only respond when @mentioned, and auto-thread the reply.
 //  - 'ignore':  never respond in this channel.
 db.run(`
