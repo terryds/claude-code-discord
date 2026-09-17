@@ -52,7 +52,7 @@ Every guild text channel has a **response mode** — a per-channel override or t
 - **Mention → thread** — the bot only reacts when you @mention it; it creates a thread from your message (named after its first words) and replies inside, again with a fresh session. Messages that mention someone else (not the bot) are left alone.
 - **Ignored** — the bot never responds in the channel.
 
-Regardless of mode: **DMs always answer**, and once the bot is in a thread it keeps answering there without a mention. Each DM / channel / thread is its **own conversation** with its own Claude session — contexts don't bleed. Conversations run **concurrently**; within one conversation it's one task at a time (a new message auto-stops that conversation's current run). Careful with two conversations editing the same project simultaneously — the relay doesn't referee file conflicts.
+Regardless of mode: **DMs always answer**, and once the bot is in a thread it keeps answering there without a mention. Each DM / channel / thread is its **own conversation** with its own Claude session — contexts don't bleed. Conversations run **concurrently**; within one conversation it's one task at a time (a new message auto-stops that conversation's current run; prefix it with `/queue` to run it *after* the current task instead). Careful with two conversations editing the same project simultaneously — the relay doesn't referee file conflicts.
 
 Every message reaching the agent is prefixed with its Discord context (sender username + id, channel + id, server, thread) so the agent knows who and where it's talking to — and can act on those ids with `bin/discord`.
 
@@ -171,7 +171,8 @@ Config via env vars: `RELAY_PROCESS_NAME` (default `claude-code-discord-coworker
 Available both as plain text and as native slash commands (registered per-guild, so they appear instantly):
 
 - `/help` — show usage
-- `/stop` — interrupt the agent (kills that conversation's in-flight run)
+- `/stop` — interrupt the agent (kills that conversation's in-flight run and discards its queue)
+- `/queue <message>` — run a message *after* the current task finishes instead of replacing it; `/queue` alone lists the queue, `/queue clear` empties it
 - `/new_session` — fresh conversation *here* (other channels/threads keep their context)
 - `/model` — show or set the Claude model (`fable`, `opus`, `sonnet`, `haiku`, or a full id; `default` clears)
 - `/effort` — show or set reasoning effort (`low`…`max`)
@@ -184,7 +185,9 @@ Slash-command replies are ephemeral (only you see them). Text commands answer in
 
 ### Interrupting a run
 
-The agent streams its progress (thinking, tool calls, results) into the conversation as it works, and the gateway keeps receiving the whole time. Send `/stop` to cancel that conversation's run, or just send a new prompt — it auto-stops the running task and starts the new one. Stopping is a hard process kill: file edits already made stay on disk; the interrupted turn isn't saved to the session.
+The agent streams its progress (thinking, tool calls, results) into the conversation as it works, and the gateway keeps receiving the whole time. Send `/stop` to cancel that conversation's run, or just send a new prompt — it auto-stops the running task and starts the new one (anything queued with `/queue` is discarded too). Stopping is a hard process kill: file edits already made stay on disk; the interrupted turn isn't saved to the session.
+
+To **not** interrupt, prefix the message with `/queue` (or use the `/queue` slash command with a `message`): it's held until the current task (and anything queued before it) finishes, then runs as a normal follow-up turn in the same session. Works with attachments too — put `/queue …` in the message text. `/queue` on its own lists what's waiting, `/queue clear` drops it, and `/stop` stops the running task *and* clears the queue. Queues are per conversation and in-memory — a relay restart (e.g. `/update`) drops them. `/queue` into an idle conversation just runs the message immediately.
 
 ### Step message cleanup
 

@@ -16,6 +16,10 @@
  *  - ignore:  never respond in the channel.
  * Inside a thread the bot knows (it created it or already has a session
  * there), it always responds without a mention. DMs always respond.
+ *
+ * Within one conversation it's one run at a time: a new message auto-stops
+ * the current run, while "/queue <text>" holds the message until the current
+ * run (and anything queued before it) has finished.
  */
 import { mkdirSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
@@ -343,7 +347,107 @@ async function sweepStepDeletes(): Promise<void> {
 type ActiveRun = { abort: AbortController };
 const activeRuns = new Map<string, ActiveRun>();
 
+// ── Prompt queue ────────────────────────────────────────────────────
+//
+// `/queue <text>` defers a prompt until the conversation's current run has
+// finished instead of auto-stop-and-replacing it. Queues are per conversation
+// (same key as sessions/runs), in-memory only — a relay restart drops them.
+// Only the prompt text is stored: the session id and any pending context are
+// resolved when the item actually starts, so it resumes from whatever the
+// previous run left behind.
+
+type QueuedPrompt = { prompt: string; channelId: string; preview: string };
+const promptQueues = new Map<string, QueuedPrompt[]>();
+const MAX_QUEUE_LENGTH = 20;
+
+function queueLength(sessionKey: string): number {
+  return promptQueues.get(sessionKey)?.length ?? 0;
+}
+
+/** Drop every queued prompt for one conversation. Returns how many were dropped. */
+function clearQueue(sessionKey: string): number {
+  const n = queueLength(sessionKey);
+  promptQueues.delete(sessionKey);
+  return n;
+}
+
+/** Start the next queued prompt of a conversation, if any. */
+function dispatchNextQueued(sessionKey: string): void {
+  // Never launch on top of a live run (e.g. a replacement prompt started
+  // while the finished run was still delivering its reply) — the queue
+  // simply waits for that run to finish and drain it.
+  if (activeRuns.has(sessionKey)) return;
+  const queue = promptQueues.get(sessionKey);
+  if (!queue || queue.length === 0) return;
+  const next = queue.shift()!;
+  if (queue.length === 0) promptQueues.delete(sessionKey);
+  const remaining = queue.length;
+  void sendDiscord(
+    next.channelId,
+    `▶️ **Starting queued task:** ${next.preview}` +
+      (remaining > 0 ? `\n*${remaining} more in the queue.*` : ''),
+    { suppressEmbeds: true }
+  ).catch(() => {});
+  launchPrompt(next.prompt, next.channelId, sessionKey);
+}
+
+/**
+ * Hold a prompt behind the conversation's running task. Returns the notice to
+ * show the user when it was queued (or refused because the queue is full), or
+ * null when nothing is running — the caller should just launch it.
+ */
+function tryEnqueue(
+  prompt: string,
+  preview: string,
+  channelId: string,
+  sessionKey: string
+): string | null {
+  if (!activeRuns.has(sessionKey)) return null;
+  const queue = promptQueues.get(sessionKey) ?? [];
+  if (queue.length >= MAX_QUEUE_LENGTH) {
+    return `⚠️ **Queue is full** (${MAX_QUEUE_LENGTH}). Wait for the current task or send \`/queue clear\`.`;
+  }
+  queue.push({ prompt, channelId, preview });
+  promptQueues.set(sessionKey, queue);
+  return `📥 **Queued** (#${queue.length}): ${preview}\nIt'll run when the current task finishes.`;
+}
+
+/** Resolve the session + pending context for a prompt and run it. */
+function launchPrompt(prompt: string, channelId: string, sessionKey: string): void {
+  // Out-of-band notifications (scheduled jobs, bin/notify, /api/notify
+  // callers) were delivered straight to the user's Discord — the agent never
+  // saw them. Surface the ones addressed to this conversation in this turn's
+  // prompt so a reply that references an alert ("expand the second draft")
+  // resolves correctly.
+  const pending = drainPendingContext(sessionKey);
+  if (pending.items.length > 0) {
+    prompt = `${formatPendingContext(pending.items, pending.omitted)}\n\n${prompt}`;
+  }
+
+  const sessionId = getSetting(sessionKey);
+
+  logMessage({ direction: 'in', text: prompt, session_id: sessionId });
+
+  console.log(
+    `[discord] → claude (${sessionId ? 'resume ' + sessionId.slice(0, 8) : 'new session'}): ${prompt.slice(0, 80)}`
+  );
+
+  // Fire-and-forget: the run streams its own output and the gateway stays
+  // free to receive /stop and further messages.
+  startEngineRun(prompt, sessionId, channelId, sessionKey);
+}
+
+/** One-line summary of a prompt for queue listings and toasts. */
+function promptPreview(prompt: string): string {
+  const line = prompt.replace(/\s+/g, ' ').trim();
+  return line.length > 60 ? line.slice(0, 57) + '…' : line;
+}
+
 function stopRun(sessionKey: string): boolean {
+  // Note: does NOT touch the prompt queue — startEngineRun calls this to
+  // replace a run, including when it launches a queued item. Callers that
+  // mean "abandon the plan" (/stop, a replacement prompt, persona change)
+  // clear the queue themselves.
   const run = activeRuns.get(sessionKey);
   if (!run) return false;
   activeRuns.delete(sessionKey); // claim it so the run's own cleanup won't double-clear
@@ -353,6 +457,7 @@ function stopRun(sessionKey: string): boolean {
 
 /** Abort every conversation's run. Returns how many stopped. */
 export function stopAllRuns(): number {
+  promptQueues.clear();
   let n = 0;
   for (const key of Array.from(activeRuns.keys())) {
     if (stopRun(key)) n++;
@@ -421,9 +526,14 @@ function startEngineRun(
     }
 
     await deliverResult(result, channelId, sessionKey);
+    // Hand off to the next queued prompt only after this run's reply went
+    // out, so replies arrive in order. An aborted run never continues the
+    // queue — /stop and replacement prompts clear it anyway.
+    if (!abort.signal.aborted) dispatchNextQueued(sessionKey);
   })().catch((err) => {
     console.error('[discord] engine run crashed:', err);
     if (activeRuns.get(sessionKey) === run) activeRuns.delete(sessionKey);
+    dispatchNextQueued(sessionKey);
   });
 }
 
@@ -634,6 +744,13 @@ async function processMessage(msg: Message): Promise<void> {
     return;
   }
 
+  // `/queue <text>`: the text after the command is the real message, and it
+  // waits for the conversation's current task instead of replacing it.
+  // (Bare `/queue` and `/queue clear` were handled as commands above.)
+  const queueMatch = QUEUE_PREFIX_RE.exec(text);
+  const queueThis = queueMatch !== null;
+  if (queueMatch) text = queueMatch[1].trim();
+
   // Attachments: download to disk and hand Claude the local paths.
   const attachmentRefs: string[] = [];
   for (const att of msg.attachments.values()) {
@@ -698,31 +815,29 @@ async function processMessage(msg: Message): Promise<void> {
 
   prompt = `${contextPrefix(msg, targetChannelId !== msg.channelId)}\n\n${prompt}`;
 
-  // Out-of-band notifications (scheduled jobs, bin/notify, /api/notify
-  // callers) were delivered straight to the user's Discord — the agent never
-  // saw them. Surface the ones addressed to this conversation in this turn's
-  // prompt so a reply that references an alert ("expand the second draft")
-  // resolves correctly.
-  const pending = drainPendingContext(sessionKey);
-  if (pending.items.length > 0) {
-    prompt = `${formatPendingContext(pending.items, pending.omitted)}\n\n${prompt}`;
+  if (queueThis) {
+    // Defer until the current run (and anything already queued) finishes.
+    const preview = promptPreview(text || msg.attachments.first()?.name || prompt);
+    const notice = tryEnqueue(prompt, preview, targetChannelId, sessionKey);
+    if (notice) {
+      await sendDiscord(targetChannelId, notice, { suppressEmbeds: true });
+      return;
+    }
+    // Nothing to wait for — queueing into an idle conversation runs it now.
+    await sendDiscord(targetChannelId, '▶️ Nothing is running here, so starting it right away.');
+  } else if (activeRuns.has(sessionKey)) {
+    // Auto-stop & replace: a fresh prompt cancels whatever THIS conversation is
+    // still running (other conversations' runs are unaffected) — and drops
+    // its queue, since the user chose a new plan.
+    const dropped = clearQueue(sessionKey);
+    await sendDiscord(
+      targetChannelId,
+      '🛑 Stopping the previous task and starting the new one…' +
+        (dropped > 0 ? ` (${dropped} queued task${dropped === 1 ? '' : 's'} discarded)` : '')
+    );
   }
 
-  const sessionId = getSetting(sessionKey);
-
-  logMessage({ direction: 'in', text: prompt, session_id: sessionId });
-
-  // Auto-stop & replace: a fresh prompt cancels whatever THIS conversation is
-  // still running (other conversations' runs are unaffected).
-  if (activeRuns.has(sessionKey)) {
-    await sendDiscord(targetChannelId, '🛑 Stopping the previous task and starting the new one…');
-  }
-
-  console.log(
-    `[discord] → claude (${sessionId ? 'resume ' + sessionId.slice(0, 8) : 'new session'}): ${prompt.slice(0, 80)}`
-  );
-
-  startEngineRun(prompt, sessionId, targetChannelId, sessionKey);
+  launchPrompt(prompt, targetChannelId, sessionKey);
 }
 
 /** Cap the FYI preamble so a notification flood can't crowd out the prompt. */
@@ -756,21 +871,28 @@ function formatPendingContext(items: PendingContextRow[], omitted: number): stri
  * The Discord metadata Claude sees with every message: who wrote it and where,
  * with the raw ids it needs to target replies/mentions via bin/discord.
  */
-function contextPrefix(msg: Message, threaded: boolean): string {
-  const u = msg.author;
-  const display = msg.member?.displayName ?? u.globalName ?? u.username;
+/**
+ * Where a prompt came from, for the agent. Works for a gateway message and for
+ * a slash interaction (`/queue message:…`), which carries the same fields
+ * under slightly different names.
+ */
+function contextPrefix(src: Message | ChatInputCommandInteraction, threaded: boolean): string {
+  const u = 'author' in src ? src.author : src.user;
+  const member = src.member;
+  const display =
+    (member && 'displayName' in member ? member.displayName : null) ?? u.globalName ?? u.username;
   const who = `@${u.username}${display && display !== u.username ? ` (display name "${display}")` : ''}, user id ${u.id}`;
-  if (!msg.guildId) {
+  if (!src.guildId) {
     return `(Discord DM from ${who} — your reply is delivered back to this DM.)`;
   }
-  const channel = msg.channel;
-  const isThread = channel.isThread();
-  const thread = isThread ? (channel as ThreadChannel) : null;
-  const parentName = thread?.parent?.name ?? (('name' in channel && channel.name) || null);
+  const channel = src.channel;
+  const thread = channel?.isThread() ? (channel as ThreadChannel) : null;
+  const parentName =
+    thread?.parent?.name ?? ((channel && 'name' in channel && channel.name) || null);
   const channelPart = thread
     ? `in thread "${thread.name}" (thread id ${thread.id}) of #${parentName ?? thread.parentId} (channel id ${thread.parentId})`
-    : `in #${parentName ?? msg.channelId} (channel id ${msg.channelId})`;
-  const guildPart = msg.guild ? ` of server "${msg.guild.name}" (guild id ${msg.guildId})` : '';
+    : `in #${parentName ?? src.channelId} (channel id ${src.channelId})`;
+  const guildPart = src.guild ? ` of server "${src.guild.name}" (guild id ${src.guildId})` : '';
   const delivery = threaded
     ? 'your reply goes to a new thread created from this message'
     : 'your reply is delivered back there';
@@ -841,6 +963,7 @@ async function sendOnboardingDone(channelId: string): Promise<void> {
 
 const COMMAND_NAMES = new Set([
   'stop',
+  'queue',
   'new_session',
   'persona',
   'skills',
@@ -852,10 +975,20 @@ const COMMAND_NAMES = new Set([
   'effort',
 ]);
 
+/** `/queue <text>` — the captured group is the message to defer. */
+const QUEUE_PREFIX_RE = /^\/queue\s+([\s\S]+)$/i;
+
 function isCommandText(text: string): boolean {
   if (!text.startsWith('/')) return false;
-  const name = text.slice(1).split(/\s+/, 1)[0]?.toLowerCase() ?? '';
-  return COMMAND_NAMES.has(name);
+  const [name, ...rest] = text.slice(1).split(/\s+/);
+  const lower = name?.toLowerCase() ?? '';
+  if (lower === 'queue') {
+    // Bare `/queue` (list) and `/queue clear` are commands; `/queue <text>`
+    // is a prompt that takes the queue path instead of auto-stop-and-replace.
+    const arg = rest.join(' ').trim().toLowerCase();
+    return arg === '' || arg === 'clear';
+  }
+  return COMMAND_NAMES.has(lower);
 }
 
 type CommandContext = { sessionKey: string; channelId: string };
@@ -867,10 +1000,40 @@ async function runCommand(
   ctx: CommandContext
 ): Promise<string | null> {
   switch (name) {
-    case 'stop':
-      return stopRun(ctx.sessionKey)
-        ? `🛑 **Stopped.** ${ENGINE_LABEL} was interrupted.`
-        : '💤 Nothing is running in this conversation.';
+    case 'stop': {
+      // Scoped like /new_session: only this conversation's run (and its
+      // queue) is stopped.
+      const dropped = clearQueue(ctx.sessionKey);
+      const droppedNote =
+        dropped > 0 ? ` ${dropped} queued task${dropped === 1 ? '' : 's'} discarded.` : '';
+      if (stopRun(ctx.sessionKey)) {
+        return `🛑 **Stopped.** ${ENGINE_LABEL} was interrupted.${droppedNote}`;
+      }
+      if (dropped > 0) return `🗑 **Queue cleared.**${droppedNote}`;
+      return '💤 Nothing is running in this conversation.';
+    }
+
+    case 'queue': {
+      // `/queue <text>` never reaches here (it's a prompt) — only list/clear.
+      if (arg.trim().toLowerCase() === 'clear') {
+        const n = clearQueue(ctx.sessionKey);
+        return n > 0
+          ? `🗑 **Queue cleared.** ${n} task${n === 1 ? '' : 's'} discarded.`
+          : '📭 The queue is already empty.';
+      }
+      const queue = promptQueues.get(ctx.sessionKey) ?? [];
+      if (queue.length === 0) {
+        return activeRuns.has(ctx.sessionKey)
+          ? '📭 **Queue is empty.**\nSend `/queue your message` to run something after the current task finishes.'
+          : '📭 **Queue is empty** and nothing is running — just send your message.';
+      }
+      return [
+        `📥 **Queued tasks** (${queue.length}):`,
+        ...queue.map((q, i) => `${i + 1}. ${q.preview}`),
+        '',
+        '*`/queue clear` — discard them all · `/stop` — stop the current task and discard them*',
+      ].join('\n');
+    }
 
     case 'new_session':
       // Scoped to where the command was sent — other conversations keep
@@ -1023,6 +1186,7 @@ async function runCommand(
         '',
         'Commands (also available as slash commands):',
         '- `/stop` — interrupt the agent while it\'s working',
+        '- `/queue <message>` — run a message after the current task finishes (instead of replacing it); `/queue` alone lists the queue, `/queue clear` empties it',
         '- `/new_session` — start a fresh conversation here',
         '- `/model` — show or set the Claude model',
         '- `/effort` — show or set the reasoning effort',
@@ -1044,6 +1208,18 @@ const STRING_OPTION = 3;
 
 const SLASH_COMMANDS = [
   { name: 'stop', description: 'Interrupt the agent while it is working' },
+  {
+    name: 'queue',
+    description: 'Run a message after the current task finishes (instead of replacing it)',
+    options: [
+      {
+        type: STRING_OPTION,
+        name: 'message',
+        description: 'What to run next; leave empty to list the queue, or "clear" to empty it',
+        required: false,
+      },
+    ],
+  },
   { name: 'new_session', description: 'Start a fresh conversation here' },
   {
     name: 'model',
@@ -1123,7 +1299,31 @@ async function handleInteraction(i: ChatInputCommandInteraction): Promise<void> 
       : channelSessionKey(i.channelId);
 
   const arg =
-    i.options.getString('text') ?? i.options.getString('model') ?? i.options.getString('level') ?? '';
+    i.options.getString('text') ??
+    i.options.getString('model') ??
+    i.options.getString('level') ??
+    i.options.getString('message') ??
+    '';
+
+  // `/queue message:<text>` is a prompt, not a command: it takes the queue
+  // path (or runs right away when the conversation is idle). Everything the
+  // text path would add — Discord context, pending notifications, session —
+  // is resolved the same way; slash interactions just can't carry files.
+  if (i.commandName === 'queue' && arg.trim() && arg.trim().toLowerCase() !== 'clear') {
+    const text = arg.trim();
+    const prompt = `${contextPrefix(i, false)}\n\n${text}`;
+    const notice = tryEnqueue(prompt, promptPreview(text), i.channelId, sessionKey);
+    if (notice) {
+      await i.reply({ content: notice, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    await i.reply({
+      content: `▶️ Nothing is running here, so starting it right away: ${promptPreview(text)}`,
+      flags: MessageFlags.Ephemeral,
+    });
+    launchPrompt(prompt, i.channelId, sessionKey);
+    return;
+  }
 
   const reply = await runCommand(i.commandName, arg, { sessionKey, channelId: i.channelId });
   const content = reply ?? 'Unknown command.';
