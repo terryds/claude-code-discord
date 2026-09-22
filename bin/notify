@@ -156,8 +156,19 @@ while [ -n "$MSG" ]; do
     echo "$BODY"
     continue
   fi
-  RESP="$(curl -s --max-time 15 -X POST "$API/channels/$CHANNEL_ID/messages" \
-    -H "Authorization: Bot $TOKEN" -H 'Content-Type: application/json' -d "$BODY")"
+  # Retry on 429 ({message, retry_after, global}): sleep retry_after + 0.25s,
+  # up to 5 attempts — a burst of sends would otherwise drop messages.
+  for ATTEMPT in 1 2 3 4 5; do
+    RESP="$(curl -s --max-time 15 -X POST "$API/channels/$CHANNEL_ID/messages" \
+      -H "Authorization: Bot $TOKEN" -H 'Content-Type: application/json' -d "$BODY")"
+    WAIT="$(echo "$RESP" | jq -r 'if type == "object" and has("retry_after") then .retry_after else empty end' 2>/dev/null)"
+    [ -n "$WAIT" ] || break
+    sleep "$(awk -v w="$WAIT" 'BEGIN { print w + 0.25 }')"
+  done
+  if [ -n "$WAIT" ]; then
+    echo "notify: rate limited by Discord (429) — gave up after 5 attempts" >&2
+    exit 1
+  fi
   if ! echo "$RESP" | jq -e '.id' >/dev/null 2>&1; then
     echo "notify: send failed: $RESP" >&2
     exit 1

@@ -41,6 +41,8 @@ if [ -z "$TOKEN" ]; then
 fi
 
 # api <method> <path> [json-body] → prints response body; fails on HTTP error.
+# Retries on 429 (sleeps retry_after + 0.25s, up to $API_ATTEMPTS tries).
+API_ATTEMPTS=5
 api() {
   local method="$1" path="$2" body="${3:-}"
   local args=(-s --max-time 20 -X "$method" "$API$path" -H "Authorization: Bot $TOKEN")
@@ -49,8 +51,19 @@ api() {
   elif [ "$method" = "PUT" ] || [ "$method" = "POST" ]; then
     args+=(-H 'Content-Length: 0') # bodyless PUT/POST would 411 otherwise
   fi
-  local resp
-  resp="$(curl "${args[@]}")"
+  local resp wait attempt
+  for ((attempt = 1; attempt <= API_ATTEMPTS; attempt++)); do
+    resp="$(curl "${args[@]}")"
+    # A 429 body is {message, retry_after, global} — no "code", so it would
+    # slip past the error check below and look like success.
+    wait="$(echo "$resp" | jq -r 'if type == "object" and has("retry_after") then .retry_after else empty end' 2>/dev/null)"
+    [ -n "$wait" ] || break
+    sleep "$(awk -v w="$wait" 'BEGIN { print w + 0.25 }')"
+  done
+  if [ -n "$wait" ]; then
+    echo "discord: rate limited by Discord (429) — gave up after $API_ATTEMPTS attempts on $method $path" >&2
+    return 1
+  fi
   # Discord errors carry a "code"+"message" object (and no expected fields).
   if echo "$resp" | jq -e 'type == "object" and has("message") and has("code")' >/dev/null 2>&1; then
     echo "discord: $(echo "$resp" | jq -r '.message')" >&2
