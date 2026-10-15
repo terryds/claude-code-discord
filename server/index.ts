@@ -95,6 +95,7 @@ import {
   EFFORT_LEVELS,
 } from './engine.ts';
 import { setDashboardPort } from './dashboard-url.ts';
+import { startAuthExpiryWatch } from './auth-expiry.ts';
 
 // Default to 8100 (distinct from the Telegram relay's 8000, so both can run
 // on one host); fall back to 8101 if it's taken. An explicit PORT env var
@@ -830,6 +831,7 @@ function serveStatic(url: URL): Response {
 
 startListener();
 startJobScheduler();
+startAuthExpiryWatch();
 
 const fetchHandler = async (req: Request, server?: RequestIPServer) => {
   const url = new URL(req.url);
