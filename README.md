@@ -71,6 +71,16 @@ The relay spawns your local `claude` CLI, so that CLI has to be authenticated. O
 
 Detection is cheap — `claude auth status`, no model call. You can also authenticate the CLI yourself on the host (`claude auth login`) and the relay will pick it up.
 
+### When the sign-in expires
+
+A subscription login has two lifetimes: the access token renews itself every few hours, but the **refresh token has a hard expiry** (a few weeks, not extended by use). Past it, every run fails with *"OAuth session expired and could not be refreshed"* until someone signs in again — that's Claude Code's behaviour, not the relay's, and there is no headless way to renew it. The relay makes that a non-event instead of a surprise:
+
+- **The dashboard's status is kept truthful by real runs.** Every Discord turn writes its outcome back: a completed turn confirms the sign-in, an auth failure flips it to *signed out* with the error — no need to press **Check now** (which, being `claude auth status`, can't tell a dead token from a live one anyway; the relay also reads the credential's own expiry so a lapsed login reads as signed out even there).
+- **The strip at the top of the dashboard** shows "valid until <date>" when healthy and becomes a banner with a **Sign in again** button when the login is about to lapse or already has.
+- **The owner gets a DM ahead of time**: 3 days before expiry, the day before, and when it lapses — each once, with a direct link to the dashboard's auth section (`…/#auth`). A failed run says the same thing instead of the raw CLI error. The link needs a reachable dashboard address (`hostname -f` or `DASHBOARD_URL`). The check reads only the credential's timestamps (macOS keychain or `~/.claude/.credentials.json`), hourly, with no `claude` call.
+
+If a re-login every few weeks is still too much, `claude setup-token` mints a ~1-year token the relay can inject — at the cost of only covering relay-spawned runs, not plain `claude` on the host.
+
 ## Adding MCP servers, connectors and skills
 
 The dashboard's **Capabilities** page lists what the host's Claude Code can reach — MCP servers with live health, skills, plugins. It's read-only on purpose: you add things by asking over Discord, no SSH needed.

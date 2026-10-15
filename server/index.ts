@@ -95,7 +95,8 @@ import {
   EFFORT_LEVELS,
 } from './engine.ts';
 import { setDashboardPort } from './dashboard-url.ts';
-import { startAuthExpiryWatch } from './auth-expiry.ts';
+import { hostLoginExpiresAt } from './claude-credentials.ts';
+import { startAuthExpiryWatch } from './auth-watch.ts';
 
 // Default to 8100 (distinct from the Telegram relay's 8000, so both can run
 // on one host); fall back to 8101 if it's taken. An explicit PORT env var
@@ -197,6 +198,18 @@ function htmlToMarkdown(html: string): string {
 
 /** The slice of Bun.Server the API needs (the full type is generic across bun-types versions). */
 type RequestIPServer = { requestIP(req: Request): { address: string } | null };
+
+/**
+ * Auth setup + the cached status + when the host sign-in lapses — everything
+ * the dashboard needs to render auth state without running a probe.
+ */
+async function authSummary() {
+  return {
+    ...getAuthConfig(),
+    last: getLastAuthProbe(),
+    login_expires_at: await hostLoginExpiresAt(),
+  };
+}
 
 async function handleApi(req: Request, url: URL, server?: RequestIPServer): Promise<Response> {
   const p = url.pathname.replace(/^\/api/, '') || '/';
@@ -300,7 +313,7 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
       default_mode: getDefaultChannelMode(),
       model: getModel(),
       effort: getEffort(),
-      auth: { ...getAuthConfig(), last: getLastAuthProbe() },
+      auth: await authSummary(),
     });
   }
 
@@ -316,14 +329,14 @@ async function handleApi(req: Request, url: URL, server?: RequestIPServer): Prom
     // Cache the outcome so the dashboard can show auth state without
     // re-probing on every load.
     const rec = saveAuthProbe(result);
-    return json({ ...result, checked_at: rec.checked_at });
+    return json({ ...result, checked_at: rec.checked_at, login_expires_at: await hostLoginExpiresAt() });
   }
 
   // Read the persisted auth setup (method + whether a key is saved) and the
   // last cached probe result, without probing. Used by the dashboard to render
   // the current state cheaply.
   if (p === '/auth-config' && m === 'GET') {
-    return json({ ...getAuthConfig(), last: getLastAuthProbe() });
+    return json(await authSummary());
   }
 
   // Update auth setup: switch method and/or save (or clear) the API key.
