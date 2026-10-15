@@ -588,11 +588,12 @@ async function deliverResult(
   await sendDiscord(channelId, formatRunError(result.error), { suppressEmbeds: true });
 }
 
-// The CLI's raw sign-out error ("Not logged in · Please run /login") is
-// misleading over Discord: /login reads like a bot command, and the user isn't
-// at a terminal anyway. Turn it into re-auth steps with a dashboard link.
+// The CLI's raw sign-out errors ("Not logged in · Please run /login",
+// "Failed to authenticate: OAuth session expired and could not be refreshed")
+// are misleading over Discord: /login reads like a bot command, and the user
+// isn't at a terminal anyway. Turn them into re-auth steps with a dashboard link.
 const AUTH_ERROR_RE =
-  /not logged in|please run \/login|invalid api key|token .{0,30}(expired|revoked)|authentication[_ ]?error|401 unauthorized/i;
+  /not logged in|please run \/login|invalid api key|token .{0,30}(expired|revoked)|authentication[_ ]?error|401 unauthorized|failed to authenticate|session expired|could not be refreshed/i;
 
 function formatRunError(error: string): string {
   if (!AUTH_ERROR_RE.test(error)) {
