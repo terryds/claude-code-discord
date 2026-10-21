@@ -193,6 +193,13 @@ To **not** interrupt, prefix the message with `/queue` (or use the `/queue` slas
 
 To keep channels readable, those streamed step messages are **auto-deleted 1 minute after they're posted** (the final reply always stays). Change the delay — or set it to **Never** to keep every step — under **Step messages** in the dashboard. Deletions are queued in the database, so pending cleanups survive a relay restart.
 
+## Host memory guard and app previews
+
+A relay that spawns `claude -p` on a starved VM looks exactly like a dead bot: the process starts but crawls, HTTP calls time out, nothing comes back. Two guards keep that from happening silently:
+
+- **Before every run** the relay reads available memory (Linux `MemAvailable`). Below `LOW_MEMORY_MB` (default `512`) it posts a warning to the conversation naming the heaviest pm2 processes (at most once per 15 min per channel) and prepends the same facts to the agent's prompt, so the agent cleans up instead of guessing why its tools are slow. The run is never blocked — the message asking for the cleanup must get through. Set `LOW_MEMORY_MB=0` to disable.
+- **`bin/preview`** is how the agent starts throwaway servers (PR previews, demos) under pm2: deterministic `preview-<name>` names so a re-deploy restarts instead of adding a sibling, a TTL (default 3 days), a pm2 memory cap (default 512M), and a refusal to start when memory is low or `PREVIEW_MAX` (default 4) previews are already running. `bin/preview list`, `stop <name>`, `gc` (reap expired; `--all` for everything) and `check` (memory only; exit 2 when low) round it out. The registry lives in `data/previews.json`. `AGENTS.md` tells the agent to use it instead of bare `pm2 start`, and to bookmark only durable apps.
+
 ## Attachments
 
 Images, audio, video, and any other file you attach are downloaded to `data/incoming/<attachment_id>-<name>` and the local path (plus MIME type) is appended to the prompt — Claude reads images/text/PDFs with its `Read` tool and handles the rest with its own tools (ffmpeg, transcription, …). Discord's standard 25 MB upload limit applies. Files are not auto-deleted — wipe `data/incoming/` periodically if you don't want them around.
@@ -235,7 +242,7 @@ the settings table.
 
 ## Data
 
-Everything is stored in `data/app.db` (SQLite): `settings` (token, owner, sessions, model/effort, flags), `allowed_users`, `channel_modes`, `bookmarks`, `jobs`, `pending_context` (out-of-band notifications queued as agent context), and the `message_log`/`step_log` behind the dashboard's activity feed. To wipe state: stop the process, delete `data/app.db*` and `data/incoming/`, restart — or use **Reset everything** in the dashboard.
+Everything is stored in `data/app.db` (SQLite): `settings` (token, owner, sessions, model/effort, flags), `allowed_users`, `channel_modes`, `bookmarks`, `jobs`, `pending_context` (out-of-band notifications queued as agent context), and the `message_log`/`step_log` behind the dashboard's activity feed. `data/previews.json` is `bin/preview`'s registry of running preview servers. To wipe state: stop the process, delete `data/app.db*` and `data/incoming/`, restart — or use **Reset everything** in the dashboard.
 
 ## Security
 

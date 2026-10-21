@@ -85,6 +85,45 @@ port, e.g. `http://my-vps.example.com:5173/` — an IP like
 `http://203.0.113.7:5173/` only as a last resort, and never
 `http://0.0.0.0:5173/`.
 
+## Deploying apps and PR previews on this host — use `bin/preview`
+
+The host is a small VM. Every server you start under pm2 keeps running after
+your turn ends, and nothing reaps it — six forgotten PR previews once ate the
+RAM and made the bot look dead for an afternoon. So:
+
+- **Start throwaway servers (PR previews, demos, "show me it running") with
+  `bin/preview`, never with bare `pm2 start`.** It names the process
+  `preview-<name>` (re-deploying the same name restarts it instead of adding
+  a sibling), gives it a TTL (default 3 days) and a memory cap, and
+  **refuses to start when the host is low on memory or already runs 4
+  previews** — then stop or `gc` something first; don't `--force` past it
+  unless the user says so.
+
+```bash
+bin/preview start shop-pr-42 --cwd ~/shop --port 3042 -- bun run dev
+bin/preview list                 # what's running, age, memory, when it expires
+bin/preview stop shop-pr-42      # the PR is merged / the user is done
+bin/preview gc                   # reap expired previews (gc --all: everything)
+bin/preview check                # memory guard only; exit 2 when low
+```
+
+- **Check memory before starting any new long-running process**, preview or
+  not: `bin/preview check` (or `free -m`). If it's low, stop stale things
+  (`bin/preview gc`, `pm2 ls` → `pm2 delete <name>`) before adding more, and
+  say in your reply what you stopped.
+- **Previews are ephemeral.** Stop one as soon as its purpose is served (the
+  user said "looks good", the PR merged, the demo is over). Bookmark only
+  durable apps (next section), never previews.
+- **Durable apps** (the user asked for "an app", not a preview) still go
+  under pm2, but with a deterministic `--name`, `--max-memory-restart`, and
+  `pm2 save` afterwards; one process per app — restart it, don't start a
+  twin on a new port.
+- If the relay tells you the host is low on memory (a warning at the top of
+  your prompt naming the heaviest processes), treat the cleanup as part of the
+  task before doing anything else that spawns processes.
+- For automatic cleanup, `bin/preview gc` can be registered as a job
+  (`docs/scheduled-jobs.md`) — only if the user asks, and with their channel.
+
 ## Bookmark every newly deployed app
 
 The dashboard's homepage has a **Bookmarks** section — the user's launcher for
@@ -104,6 +143,8 @@ Rules:
   never `localhost`.
 - Only bookmark apps that are actually up and reachable (the relay fetches
   the page's title and favicon when adding — a dead URL gets neither).
+- Only bookmark **durable** apps. PR previews and other throwaway servers
+  started with `bin/preview` get reaped, so a bookmark to one goes dead.
 - `bin/bookmark` is idempotent per URL (re-running refreshes the title/icon
   instead of duplicating), works even while the relay is down (direct DB
   fallback), and also supports `--list` and `--remove <url-or-id>` — do that
