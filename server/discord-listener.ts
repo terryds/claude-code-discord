@@ -62,6 +62,9 @@ import {
   setEffort,
   setModel,
   truncate as truncateTo,
+  isAuthError,
+  getAuthConfig,
+  saveAuthProbe,
   type AskQuestion,
   type EngineResult,
   type EngineStep,
@@ -570,6 +573,9 @@ async function deliverResult(
 ): Promise<void> {
   if (result.ok) {
     if (result.session_id) setSetting(sessionKey, result.session_id);
+    // A completed turn is proof the CLI is authenticated. Write it back so the
+    // dashboard's cached status stays truthful without anyone clicking Check.
+    saveAuthProbe({ authed: true, ...getAuthConfig() });
     // Claude asked a question. Headless mode auto-cancels it, so the result
     // text is just a "question canceled" notice — suppress that and instead
     // show the question + options as text. The user answers by typing back,
@@ -610,26 +616,31 @@ async function deliverResult(
   // Aborted runs were stopped on purpose; the /stop or replacement message
   // already acknowledged that, so don't surface a scary error.
   if (result.aborted) return;
+  if (isAuthError(result.error)) {
+    // The run is the ground truth: flip the dashboard's cached status to
+    // signed-out now, so it stops claiming "Authenticated" from a stale probe.
+    saveAuthProbe({ authed: false, ...getAuthConfig(), error: result.error });
+  }
   await sendDiscord(channelId, formatRunError(result.error), { suppressEmbeds: true });
 }
 
-// The CLI's raw sign-out error ("Not logged in · Please run /login") is
-// misleading over Discord: /login reads like a bot command, and the user isn't
-// at a terminal anyway. Turn it into re-auth steps with a dashboard link.
-const AUTH_ERROR_RE =
-  /not logged in|please run \/login|invalid api key|token .{0,30}(expired|revoked)|authentication[_ ]?error|401 unauthorized/i;
-
-function formatRunError(error: string): string {
-  if (!AUTH_ERROR_RE.test(error)) {
+// The CLI's raw sign-out errors ("Not logged in · Please run /login",
+// "Failed to authenticate: OAuth session expired and could not be refreshed")
+// are dead ends over Discord: /login reads like a bot command, and the user
+// isn't at a terminal anyway. Turn them into the actual fix — a link straight
+// to the dashboard's auth section they can tap from their phone.
+export function formatRunError(error: string): string {
+  if (!isAuthError(error)) {
     return `⚠️ **${ENGINE_LABEL} error**\n\`\`\`\n${safeFence(error).slice(0, 1500)}\n\`\`\``;
   }
   const url = getDashboardUrl();
   return [
-    `⚠️ **${ENGINE_LABEL} got signed out**`,
-    'To sign back in from the dashboard:',
-    url ? `1. Open ${url}` : '1. Open the dashboard in your browser',
-    `2. Under “${ENGINE_LABEL} authentication”, tap **Check now**`,
-    '3. Tap **Sign in with Claude** and authorize',
+    `⛔ **${ENGINE_LABEL} is signed out**`,
+    `*${error.slice(0, 300)}*`,
+    '',
+    "I can't answer messages until you sign in again — about 30 seconds from your phone:",
+    url ? `1. Open the dashboard:\n${url}/#auth` : `1. Open the dashboard → “${ENGINE_LABEL} authentication”`,
+    '2. Tap **Sign in with Claude** and authorize (the dashboard finishes on its own).',
   ].join('\n');
 }
 
