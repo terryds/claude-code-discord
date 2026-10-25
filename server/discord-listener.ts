@@ -88,6 +88,7 @@ import {
   threadSessionKey,
 } from './discord.ts';
 import { getPersona, setPersona, resetPersona, isCustomPersona, withPersona } from './persona.ts';
+import { formatNonAnswerNotice, isNonAnswer, looksLikeToolTimeout } from './reply-guard.ts';
 import {
   checkHostMemory,
   formatLowMemoryContext,
@@ -496,7 +497,14 @@ function startEngineRun(
     // Persist every step for the dashboard feed, then forward it to Discord.
     // Persisting first (and synchronously) keeps DB order correct even though
     // sendStep is throttled.
+    // Remember when a tool call was killed at its time cap: if the turn then
+    // ends without an answer, that is almost certainly why (see reply-guard).
+    let toolTimedOut = false;
+    const noteTimeout = (step: EngineStep) => {
+      if (step.kind === 'tool_result' && looksLikeToolTimeout(step.resultText)) toolTimedOut = true;
+    };
     const onStep = async (step: EngineStep) => {
+      noteTimeout(step);
       logStep(step, sessionId);
       await sendStep(step, channelId);
     };
@@ -543,6 +551,7 @@ function startEngineRun(
         deleteSetting(sessionKey);
         await sendDiscord(channelId, '♻️ **Previous session expired** — starting a fresh conversation…');
         const onFreshStep = async (step: EngineStep) => {
+          noteTimeout(step);
           logStep(step, null);
           await sendStep(step, channelId);
         };
@@ -553,7 +562,7 @@ function startEngineRun(
       if (activeRuns.get(sessionKey) === run) activeRuns.delete(sessionKey);
     }
 
-    await deliverResult(result, channelId, sessionKey);
+    await deliverResult(result, channelId, sessionKey, { toolTimedOut });
     // Hand off to the next queued prompt only after this run's reply went
     // out, so replies arrive in order. An aborted run never continues the
     // queue — /stop and replacement prompts clear it anyway.
@@ -569,7 +578,8 @@ function startEngineRun(
 async function deliverResult(
   result: EngineResult,
   channelId: string,
-  sessionKey: string
+  sessionKey: string,
+  runInfo: { toolTimedOut: boolean } = { toolTimedOut: false }
 ): Promise<void> {
   if (result.ok) {
     if (result.session_id) setSetting(sessionKey, result.session_id);
@@ -593,7 +603,28 @@ async function deliverResult(
       if (!r.ok) console.error(`[discord] question send failed: ${r.error}`);
       return;
     }
-    const body = result.text || `(${ENGINE_LABEL} returned an empty response)`;
+    // The turn closed without a real reply (empty, or a stub like "No response
+    // requested." left behind after a long command hit the tool time cap).
+    // Posting the stub as if it were the answer looks like the bot ignored the
+    // user — say what happened instead. The session is still saved above, so
+    // "ask again" resumes with full context.
+    if (isNonAnswer(result.text)) {
+      console.warn(
+        `[discord] run ended without an answer (${runInfo.toolTimedOut ? 'after a tool timeout' : 'no tool timeout seen'}): ${JSON.stringify(result.text.slice(0, 80))}`
+      );
+      const body = formatNonAnswerNotice({ text: result.text, toolTimedOut: runInfo.toolTimedOut });
+      const r = await sendDiscord(channelId, body, { suppressEmbeds: true });
+      logMessage({
+        direction: 'out',
+        text: body,
+        session_id: result.session_id,
+        ok: r.ok,
+        error: r.error ?? null,
+      });
+      if (!r.ok) console.error(`[discord] non-answer notice send failed: ${r.error}`);
+      return;
+    }
+    const body = result.text;
     const r = await sendDiscord(channelId, body);
     logMessage({
       direction: 'out',
