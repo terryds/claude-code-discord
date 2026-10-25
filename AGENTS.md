@@ -34,6 +34,58 @@ Every incoming message is prefixed with its Discord context (sender username
 + user id, channel name + id, server, thread if any) — use those ids directly
 with `bin/discord` when the task needs them.
 
+## Answer first; never let long work eat the reply
+
+Your run is a one-shot `claude -p`: a Bash tool call is killed at **~10
+minutes**, background commands die the moment your turn ends, and whatever
+you write as your final message is the *only* thing the user gets. A run
+that starts a 13-minute job in the foreground gets its command killed and
+ends with a stub ("No response requested.") — the user never gets an answer.
+The relay now catches those endings and posts a "finished without
+answering" notice instead, but that is damage control, not the plan.
+
+Rules, in order:
+
+1. **Answer the question before starting anything slow.** If the message
+   contains a question you can answer now (from what you know, a quick
+   lookup, a `bin/discord`/`git`/`ls` call), write that answer into your
+   final reply *first*, and only then decide whether extra work is needed.
+   Never make the answer wait on a build, deploy, test suite, sync, or
+   download.
+2. **Anything that might exceed ~5 minutes runs detached, not in the
+   foreground.** Builds, full test suites, backfills, large downloads,
+   model/package installs, scrapes — kick them off with `setsid nohup` so
+   they outlive your turn, and have the job itself report back to the
+   conversation with `bin/notify --channel <id>` when it finishes (the
+   channel/thread id is in the Discord context line at the top of the
+   message; for a DM use `bin/notify` with no `--channel`). Resolve absolute
+   paths while your turn is alive:
+
+   ```bash
+   N="$PWD/bin/notify"; CH=<channel or thread id from the context line>
+   setsid nohup bash -c "
+     cd /path/to/project
+     if bun run build > build.log 2>&1; then
+       \"$N\" --channel $CH '✅ Build finished — ready to test.'
+     else
+       { echo '❌ Build failed. Last lines:'; tail -20 build.log; } | \"$N\" --channel $CH
+     fi
+   " >/dev/null 2>&1 < /dev/null &
+   ```
+
+   Then **say in your reply that it is running detached and will report
+   back here**, with a rough ETA. Do not poll or `sleep` waiting for it.
+3. **Never end a turn with a non-answer.** "No response requested.", "Done."
+   with nothing else, or an empty message are failures. If a tool call was
+   killed at its time limit, say so and say what you did about it (restarted
+   detached, or what the user should decide). If you genuinely have nothing
+   to add, confirm what the user said in one line instead of staying silent.
+4. If a long command is unavoidable in the foreground (it must finish before
+   you can answer), tell the user up front in a short interim line via
+   `bin/discord send <channel_id> "…"` that it will take a while, keep the
+   command itself under the cap (`timeout 540 …`), and still write a real
+   final reply even if it gets cut off.
+
 ## Discord tools: `bin/discord`
 
 Your hands on the Discord API (REST, bot token read from `data/app.db`, works
@@ -169,8 +221,10 @@ bin/notify "your message"        # or pipe:  some-command | bin/notify
 
 It reads the bot token from the relay's settings DB (`data/app.db`), so it
 works even while the relay is down. Default target is the **owner's DM**;
-`--channel <id>` targets any channel or thread instead. Messages are Markdown
-(Discord-native); `--dry-run` prints the request instead of sending.
+`--channel <id>` targets any channel or thread instead — when the user asked
+in a channel or thread, report back there (its id is in the Discord context
+line), not to their DM. Messages are Markdown (Discord-native); `--dry-run`
+prints the request instead of sending.
 
 To say something **later**, schedule a detached job that outlives your turn
 (same trick safe-update-relay uses). Use an absolute path — resolve it while
