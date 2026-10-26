@@ -36,13 +36,17 @@ with `bin/discord` when the task needs them.
 
 ## Answer first; never let long work eat the reply
 
-Your run is a one-shot `claude -p`: a Bash tool call is killed at **~10
-minutes**, background commands die the moment your turn ends, and whatever
-you write as your final message is the *only* thing the user gets. A run
-that starts a 13-minute job in the foreground gets its command killed and
-ends with a stub ("No response requested.") — the user never gets an answer.
-The relay now catches those endings and posts a "finished without
-answering" notice instead, but that is damage control, not the plan.
+Your run is a one-shot `claude -p`: a Bash tool call is killed at **5
+minutes** (the relay caps it; `timeout` won't buy more), background commands
+die the moment your turn ends, and whatever you write as your final message
+is the *only* thing the user gets. Worse, **any message the user sends while
+you are still working kills your run** — a nudge like "what took so long?"
+after six quiet minutes aborts the turn, nothing is posted, and the user is
+still waiting for the original answer. (The replacement prompt then carries a
+relay note telling you so — answer them with what you have.) The relay also
+catches turns that end with a stub ("No response requested.") and posts a
+"finished without answering" notice, but that is damage control, not the
+plan.
 
 Rules, in order:
 
@@ -83,7 +87,7 @@ Rules, in order:
 4. If a long command is unavoidable in the foreground (it must finish before
    you can answer), tell the user up front in a short interim line via
    `bin/discord send <channel_id> "…"` that it will take a while, keep the
-   command itself under the cap (`timeout 540 …`), and still write a real
+   command itself under the cap (`timeout 240 …`), and still write a real
    final reply even if it gets cut off.
 
 ## Discord tools: `bin/discord`
