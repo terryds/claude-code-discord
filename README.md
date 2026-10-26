@@ -15,6 +15,32 @@ A tiny relay that forwards Discord messages to [Claude Code](https://docs.claude
 - **Scheduled jobs** — ask the agent to "watch X and alert me in #channel" and it writes a watcher script and registers it on a cron schedule with that channel as the delivery target; no billed agent turn per check (see `/jobs`, the dashboard card, and [docs/scheduled-jobs.md](docs/scheduled-jobs.md))
 - **Gateway is outbound-only** — the bot opens a WebSocket to Discord; nothing connects inbound to your machine, so it works behind NAT/VPN/private hosts (exe.dev, Tailscale) with no open ports
 
+## Quick start on exe.dev (recommended)
+
+The easiest way to run the relay is on an [exe.dev](https://exe.dev) VM: its
+image already ships the `claude` CLI, every VM gets a public
+`https://<vm-name>.exe.xyz` domain, and you set it up by describing what you
+want — an agent on the VM does the install. Sign up with this invite link:
+
+https://exe.dev/i/rlOEOFDH72EMS2A
+
+1. Go to <https://exe.dev/new>, copy the prompt from
+   [exe-dev-setup-prompt.md](exe-dev-setup-prompt.md), and paste it into the
+   **Describe your VM** box. (Prefer the terminal? That file also has an
+   `ssh exe.dev new … --prompt=/dev/stdin` command and the recommended specs.)
+2. Open the new VM and go to its **Shelley** menu to watch the agent work: it
+   clones this repo, builds it, starts the relay under pm2 on port 8100, and
+   replies there with the dashboard URL.
+3. Open that URL and finish onboarding in the browser — sign in to Claude Code
+   (subscription or API key), then create your Discord bot and paste its
+   token. No terminal login at any point.
+
+The dashboard has no authentication of its own, but you don't need to add
+any: exe.dev's proxy requires an exe.dev login by default, so only you can open
+that URL. Just don't `share set-public` this VM (see [Security](#security)).
+Prefer your own server? Follow [VPS setup with pm2](#vps-setup-with-pm2)
+instead.
+
 ## Prerequisites
 
 - [Bun](https://bun.sh) `>= 1.3.12`
@@ -102,7 +128,9 @@ The single Bun process serves `/api/*`, the static React build, and the Discord 
 
 ## VPS setup with pm2
 
-These steps assume Ubuntu/Debian. Adjust paths as needed.
+The manual path for your own server. (On exe.dev, use the
+[quick start](#quick-start-on-exedev-recommended) instead — the agent does
+all of this for you.) These steps assume Ubuntu/Debian. Adjust paths as needed.
 
 ### 1. Install dependencies
 
@@ -269,7 +297,7 @@ Claude is spawned with `--permission-mode bypassPermissions`: **every message th
 
 ### The dashboard has no built-in authentication
 
-Anyone who can open the dashboard URL can edit the allowlist, hit **Reset everything**, re-onboard with their own bot, and get shell. **Do not expose the port to the public internet directly.** Use an SSH tunnel, a private overlay (Tailscale / exe.dev private mode), or a reverse proxy with auth.
+Anyone who can open the dashboard URL can edit the allowlist, hit **Reset everything**, re-onboard with their own bot, and get shell. **Do not expose the port to the public internet directly.** Use an SSH tunnel, a private overlay (Tailscale), or a reverse proxy with auth. An exe.dev VM already does this: its proxy requires an exe.dev login by default (don't `share set-public` it).
 
 ### Prompt injection is a real risk
 

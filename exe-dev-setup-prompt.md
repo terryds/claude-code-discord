@@ -1,7 +1,7 @@
 # exe.dev Setup Prompt for claude-code-discord-coworker
 
-Paste this into exe.dev's `--prompt` (or the box at <https://exe.dev/new>) to set
-up and run the relay. exe.dev's image ships the `claude` CLI, and you
+Paste this into the **Describe your VM** box at <https://exe.dev/new> (or pass
+it via `--prompt` from the terminal) to set up and run the relay. exe.dev's image ships the `claude` CLI, and you
 **authenticate it from the dashboard** during onboarding — so this prompt just
 gets the relay running and hands you the URL to open. No terminal login.
 
@@ -28,13 +28,18 @@ Do NOT set the Discord bot token, and do NOT authenticate the claude CLI — tho
 
 ## Run it
 
-Pipe the prompt from stdin (cleanest for long prompts):
+**From the exe.dev dashboard (easiest):** open <https://exe.dev/new>, paste the
+prompt block above into the **Describe your VM** box, pick the specs (2 CPU /
+4 GB / 20 GB disk is plenty), and create the VM. Then open the VM's **Shelley**
+menu to follow the agent's progress — you'll see it clone the repo, build, and
+start the relay, and that's where it posts the dashboard URL when done.
+
+**Or from a terminal:** save just the contents of the code fence to
+`exe-prompt.txt`, then pipe it from stdin:
 
 ```bash
 ssh exe.dev new --name=discord-coworker --cpu=2 --memory=4GB --disk=20GB --prompt=/dev/stdin < exe-prompt.txt
 ```
-
-…or paste it into the "Describe your VM" box at <https://exe.dev/new>.
 
 ## After it reports the URL
 
@@ -56,9 +61,11 @@ Then you're on the dashboard and the relay is live.
 
 ## Notes
 
-- **The dashboard has no built-in auth.** Put exe.dev's access controls in
-  front of port 8100 (don't expose it openly — anyone who reaches it can edit
-  the allowlist, re-onboard, and get a shell on the VM).
+- **The dashboard has no built-in auth, and doesn't need one here.** exe.dev's
+  proxy is private by default — opening the URL requires logging in to
+  exe.dev. Keep it that way: don't run `share set-public` on this VM (anyone
+  who reaches the dashboard can edit the allowlist, re-onboard, and get a
+  shell on it).
 - Recommended specs: 2 CPU / 4 GB / 20 GB disk; Ubuntu image (auto-detected).
 - Auth (subscription login / API key), bot token, owner link, allowlist,
   channel modes, and sessions all live in `data/app.db` and survive restarts.
