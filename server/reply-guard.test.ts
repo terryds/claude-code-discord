@@ -56,14 +56,14 @@ describe('formatNonAnswerNotice', () => {
     const s = formatNonAnswerNotice({ text: 'No response requested.', toolTimedOut: true });
     expect(s).toContain('finished without answering');
     expect(s).toContain('"No response requested."');
-    expect(s).toContain('10-minute tool limit');
+    expect(s).toContain('Bash tool time limit');
     expect(s).toContain('not** still running');
   });
 
   test('describes an empty ending without blaming a tool', () => {
     const s = formatNonAnswerNotice({ text: '', toolTimedOut: false });
     expect(s).toContain('empty reply');
-    expect(s).not.toContain('10-minute tool limit');
+    expect(s).not.toContain('Bash tool time limit');
   });
 
   test('never posts the stub bare', () => {

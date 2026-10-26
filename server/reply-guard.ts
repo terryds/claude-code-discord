@@ -2,7 +2,7 @@
  * Catch runs that end without an answer.
  *
  * A headless `claude -p` turn can finish with nothing useful in its result:
- * the agent started a long foreground command, the Bash tool's ~10-minute cap
+ * the agent started a long foreground command, the Bash tool's time cap
  * killed it, and the turn wound down with a stub like "No response requested."
  * Posting that verbatim reads like the bot ignored the user. This module spots
  * such endings so the listener can say what happened and how to recover
@@ -63,7 +63,7 @@ export function formatNonAnswerNotice(ctx: NonAnswerContext): string {
   lines.push('');
   if (ctx.toolTimedOut) {
     lines.push(
-      'A command in this run hit the 10-minute tool limit and was killed, which is usually how the answer gets lost. Anything it was doing is **not** still running.'
+      'A command in this run hit the Bash tool time limit and was killed, which is usually how the answer gets lost. Anything it was doing is **not** still running.'
     );
   } else {
     lines.push('This usually happens when a long-running command got cut off before the answer was written.');
