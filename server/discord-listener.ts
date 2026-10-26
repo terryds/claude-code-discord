@@ -88,7 +88,12 @@ import {
   threadSessionKey,
 } from './discord.ts';
 import { getPersona, setPersona, resetPersona, isCustomPersona, withPersona } from './persona.ts';
-import { formatNonAnswerNotice, isNonAnswer, looksLikeToolTimeout } from './reply-guard.ts';
+import {
+  formatInterruptedRunNote,
+  formatNonAnswerNotice,
+  isNonAnswer,
+  looksLikeToolTimeout,
+} from './reply-guard.ts';
 import {
   checkHostMemory,
   formatLowMemoryContext,
@@ -354,7 +359,12 @@ async function sweepStepDeletes(): Promise<void> {
 // threads / DMs work concurrently. Within one conversation, /stop — or a new
 // prompt (auto-stop & replace) — aborts that conversation's run only.
 
-type ActiveRun = { abort: AbortController };
+type ActiveRun = {
+  abort: AbortController;
+  startedAt: number;
+  /** Last tool call seen in the step stream, e.g. "Bash: yt-dlp …". */
+  lastTool: string | null;
+};
 const activeRuns = new Map<string, ActiveRun>();
 
 // ── Prompt queue ────────────────────────────────────────────────────
@@ -489,7 +499,7 @@ function startEngineRun(
   stopRun(sessionKey);
 
   const abort = new AbortController();
-  const run: ActiveRun = { abort };
+  const run: ActiveRun = { abort, startedAt: Date.now(), lastTool: null };
   activeRuns.set(sessionKey, run);
 
   void (async () => {
@@ -502,6 +512,9 @@ function startEngineRun(
     let toolTimedOut = false;
     const noteTimeout = (step: EngineStep) => {
       if (step.kind === 'tool_result' && looksLikeToolTimeout(step.resultText)) toolTimedOut = true;
+      if (step.kind === 'tool_use') {
+        run.lastTool = `${step.toolName ?? '?'}: ${truncateTo(step.toolInput ?? '', 200)}`;
+      }
     };
     const onStep = async (step: EngineStep) => {
       noteTimeout(step);
@@ -902,6 +915,10 @@ async function processMessage(msg: Message): Promise<void> {
       '🛑 Stopping the previous task and starting the new one…' +
         (dropped > 0 ? ` (${dropped} queued task${dropped === 1 ? '' : 's'} discarded)` : '')
     );
+    // The killed run never replied, and its transcript just stops mid-tool.
+    // Resumed without explanation, the agent guesses at what happened (or
+    // picks the same long command back up). Hand it the facts instead.
+    prompt = `${formatInterruptedRunNote(activeRuns.get(sessionKey)!)}\n\n${prompt}`;
   }
 
   launchPrompt(prompt, targetChannelId, sessionKey);
@@ -950,7 +967,7 @@ function contextPrefix(src: Message | ChatInputCommandInteraction, threaded: boo
     (member && 'displayName' in member ? member.displayName : null) ?? u.globalName ?? u.username;
   const who = `@${u.username}${display && display !== u.username ? ` (display name "${display}")` : ''}, user id ${u.id}`;
   if (!src.guildId) {
-    return `(Discord DM from ${who} — your reply is delivered back to this DM.)`;
+    return `(Discord DM from ${who} — your reply is delivered back to this DM. ${ANSWER_FIRST_HINT})`;
   }
   const channel = src.channel;
   const thread = channel?.isThread() ? (channel as ThreadChannel) : null;
@@ -963,8 +980,17 @@ function contextPrefix(src: Message | ChatInputCommandInteraction, threaded: boo
   const delivery = threaded
     ? 'your reply goes to a new thread created from this message'
     : 'your reply is delivered back there';
-  return `(Discord context: message from ${who} ${channelPart}${guildPart} — ${delivery}.)`;
+  return `(Discord context: message from ${who} ${channelPart}${guildPart} — ${delivery}. ${ANSWER_FIRST_HINT})`;
 }
+
+/**
+ * Repeated on every message because AGENTS.md alone has not been enough: an
+ * agent mid-task still sinks minutes into a foreground command and the user
+ * sits with no answer. Text in the user turn carries far more weight.
+ */
+const ANSWER_FIRST_HINT =
+  'Answer any question in this message before starting slow work; a command that may run longer ' +
+  'than a few minutes must be started detached and report back with bin/notify, never run in the foreground.';
 
 /** Keep the original filename readable on disk, but strip anything that could
  *  escape the incoming dir or confuse the shell. */

@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { formatNonAnswerNotice, isNonAnswer, looksLikeToolTimeout } from './reply-guard.ts';
+import {
+  formatInterruptedRunNote,
+  formatNonAnswerNotice,
+  isNonAnswer,
+  looksLikeToolTimeout,
+} from './reply-guard.ts';
 
 describe('isNonAnswer', () => {
   test('empty or whitespace-only results', () => {
@@ -65,5 +70,24 @@ describe('formatNonAnswerNotice', () => {
     const s = formatNonAnswerNotice({ text: 'No response requested.', toolTimedOut: false });
     expect(s.trim()).not.toBe('No response requested.');
     expect(s).toContain('Ask again');
+  });
+});
+
+describe('formatInterruptedRunNote', () => {
+  test('states elapsed time, the last tool, and that no reply went out', () => {
+    const s = formatInterruptedRunNote({
+      startedAt: Date.now() - 7 * 60_000 - 12_000,
+      lastTool: 'Bash: yt-dlp --proxy … https://youtube.com/watch?v=x',
+    });
+    expect(s).toMatch(/after 7m 1[0-4]s/);
+    expect(s).toContain('while running Bash: yt-dlp');
+    expect(s).toContain('never replied');
+    expect(s).toContain('Answer them now');
+  });
+
+  test('copes with no tool seen yet', () => {
+    const s = formatInterruptedRunNote({ startedAt: Date.now() - 5_000, lastTool: null });
+    expect(s).toMatch(/after \ds\./);
+    expect(s).not.toContain('while running');
   });
 });

@@ -74,3 +74,21 @@ export function formatNonAnswerNotice(ctx: NonAnswerContext): string {
   );
   return lines.join('\n');
 }
+
+/**
+ * Prepended to a prompt that replaces a still-running turn. A nudge like "what
+ * took so long?" is the common case: the previous run was mid-command, got
+ * killed, and the user is still waiting for the original answer.
+ */
+export function formatInterruptedRunNote(run: { startedAt: number; lastTool: string | null }): string {
+  const secs = Math.max(0, Math.round((Date.now() - run.startedAt) / 1000));
+  const elapsed = secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`;
+  const doing = run.lastTool ? `, while running ${run.lastTool}` : '';
+  return (
+    `(Relay note: your previous turn in this conversation was still running after ${elapsed}${doing}. ` +
+    'The relay killed it because the user sent this message, so it never finished and never replied — ' +
+    'the user has had no answer since their last message. Answer them now, in this reply, with what you ' +
+    'know so far. Do not restart long work in the foreground; if it must continue, run it detached and ' +
+    'say so.)'
+  );
+}
