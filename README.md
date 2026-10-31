@@ -74,7 +74,7 @@ After that you're on the dashboard: channel modes, allowlist, model/effort, pers
 
 Every guild text channel has a **response mode** — a per-channel override or the global default (out of the box: `free`):
 
-- **Free responses** (default) — the bot answers every allowlisted user's message inline, no mention needed. Put `/t` (or `/thread`) anywhere in a message, as its own word, and the bot instead creates a **thread** from it and answers there, with a **fresh session** — great for branching off a side-task without polluting the channel conversation.
+- **Free responses** (default) — the bot answers every allowlisted user's message inline, no mention needed. Put `/t` (or `/thread`) anywhere in a message, as its own word, and the bot instead creates a **thread** from it and answers there, with a **fresh session** — great for branching off a side-task without polluting the channel conversation. The `/thread` slash command does the same from any channel, whatever its mode: the bot echoes your request as the thread's starter message and answers inside.
 - **Mention → thread** — the bot only reacts when you @mention it; it creates a thread from your message (named after its first words) and replies inside, again with a fresh session. Messages that mention someone else (not the bot) are left alone.
 - **Ignored** — the bot never responds in the channel.
 
@@ -209,6 +209,7 @@ Config via env vars: `RELAY_PROCESS_NAME` (default `claude-code-discord-coworker
 Available both as plain text and as native slash commands (registered per-guild, so they appear instantly):
 
 - `/help` — show usage
+- `/thread <message>` — ask in a **new thread** with a fresh session (guild channels only; the slash form works regardless of the channel's response mode; as plain text, `/t` is a shorthand)
 - `/stop` — interrupt the agent (kills that conversation's in-flight run and discards its queue)
 - `/queue <message>` — run a message *after* the current task finishes instead of replacing it; `/queue` alone lists the queue, `/queue clear` empties it
 - `/new_session` — fresh conversation *here* (other channels/threads keep their context)
@@ -219,7 +220,7 @@ Available both as plain text and as native slash commands (registered per-guild,
 - `/jobs` — list scheduled watcher jobs
 - `/update` — pull the latest relay version, rebuild, restart
 
-Slash-command replies are ephemeral (only you see them). Text commands answer in place.
+Slash-command replies are ephemeral (only you see them), except `/thread`, whose echo of your request is public — it's the message the thread hangs off. Text commands answer in place.
 
 ### Interrupting a run
 

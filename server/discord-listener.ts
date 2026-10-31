@@ -10,7 +10,8 @@
  * Response modes (per channel, with a global default — 'free' out of the box):
  *  - free:    reply inline without requiring a mention; a standalone "/t"
  *             (or "/thread") anywhere in the message spawns a thread with a
- *             fresh session.
+ *             fresh session. The `/thread` slash command does the same from
+ *             any guild channel, whatever its mode.
  *  - mention: only respond when @mentioned; the reply auto-creates a thread
  *             from the triggering message with a fresh session (Hermes-style).
  *  - ignore:  never respond in the channel.
@@ -1278,6 +1279,7 @@ async function runCommand(
         'You can also attach files (images, audio, video, documents) — they get saved to disk and the file path is passed to the agent.',
         '',
         'Commands (also available as slash commands):',
+        '- `/thread <message>` — ask in a new thread with a fresh session (as text, `/t` also works)',
         '- `/stop` — interrupt the agent while it\'s working',
         '- `/queue <message>` — run a message after the current task finishes (instead of replacing it); `/queue` alone lists the queue, `/queue clear` empties it',
         '- `/new_session` — start a fresh conversation here',
@@ -1301,6 +1303,18 @@ const STRING_OPTION = 3;
 
 const SLASH_COMMANDS = [
   { name: 'stop', description: 'Interrupt the agent while it is working' },
+  {
+    name: 'thread',
+    description: 'Ask in a new thread with a fresh session',
+    options: [
+      {
+        type: STRING_OPTION,
+        name: 'message',
+        description: 'What to work on in the thread',
+        required: true,
+      },
+    ],
+  },
   {
     name: 'queue',
     description: 'Run a message after the current task finishes (instead of replacing it)',
@@ -1398,6 +1412,11 @@ async function handleInteraction(i: ChatInputCommandInteraction): Promise<void> 
     i.options.getString('message') ??
     '';
 
+  if (i.commandName === 'thread') {
+    await handleThreadInteraction(i, arg.trim(), sessionKey);
+    return;
+  }
+
   // `/queue message:<text>` is a prompt, not a command: it takes the queue
   // path (or runs right away when the conversation is idle). Everything the
   // text path would add — Discord context, pending notifications, session —
@@ -1428,6 +1447,66 @@ async function handleInteraction(i: ChatInputCommandInteraction): Promise<void> 
   for (const c of restChunks) {
     await i.followUp({ content: c, flags: MessageFlags.Ephemeral });
   }
+}
+
+/**
+ * `/thread message:<text>` — the slash form of the "/t" text trigger. An interaction has no user message to hang a thread off, so the
+ * bot's public reply echoing the request becomes the thread's starter
+ * message; the run then lives in that thread with a fresh session, exactly
+ * like a text "/t". Being an explicit ask, it works in any guild channel
+ * regardless of the channel's response mode.
+ */
+async function handleThreadInteraction(
+  i: ChatInputCommandInteraction,
+  text: string,
+  hereSessionKey: string
+): Promise<void> {
+  if (!i.guildId) {
+    await i.reply({
+      content: "Threads aren't available in DMs — just send your message here.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  if (i.channel?.isThread()) {
+    await i.reply({
+      content:
+        'This is already a thread — just send your message here. To branch off again, run `/thread` from the parent channel.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  if (!text) {
+    await i.reply({
+      content: 'Tell me what to work on: `/thread message: …`',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  // Public echo = the thread's starter message. The mention renders the
+  // asker's name but `allowedMentions` keeps it from pinging them.
+  const echo = `🧵 <@${i.user.id}>: ${text}`;
+  await i.reply({
+    content: echo.length > 2000 ? echo.slice(0, 1997) + '…' : echo,
+    allowedMentions: { parse: [] },
+  });
+  const anchor = await i.fetchReply();
+
+  const created = await createThreadFromMessage(i.channelId, anchor.id, deriveThreadName(text));
+  if (!created.ok) {
+    // Same fallback as the text trigger: answer in the channel instead.
+    console.error(`[discord] thread creation failed: ${created.error}`);
+    await i.followUp({
+      content: `⚠️ Couldn't create a thread (${created.error}) — replying here instead.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    launchPrompt(`${contextPrefix(i, false)}\n\n${text}`, i.channelId, hereSessionKey);
+    return;
+  }
+
+  // Fresh conversation: no session is stored for the new thread yet.
+  launchPrompt(`${contextPrefix(i, true)}\n\n${text}`, created.id, threadSessionKey(created.id));
 }
 
 function chunk2000(text: string): string[] {
